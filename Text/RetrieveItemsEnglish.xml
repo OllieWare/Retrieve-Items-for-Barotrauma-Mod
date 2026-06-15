@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<infotexts language="English">
+  <ordername.retrieveitems>Retrieval</ordername.retrieveitems>
+  <ordernamecontextual.retrieveitems>Retrieval</ordernamecontextual.retrieveitems>
+  <orderdialog.retrieveitems>Retrieve items from the abandoned outpost.</orderdialog.retrieveitems>
+  <orderdialogself.retrieveitems>I'll retrieve items from the abandoned outpost.</orderdialogself.retrieveitems>
+  <orderdialog.dismissed.retrieveitems>[name], cancelling retrieval.</orderdialog.dismissed.retrieveitems>
+  <orderdialogself.dismissed.retrieveitems>Understood, cancelling retrieval.</orderdialogself.dismissed.retrieveitems>
+  <ordername.retrievewreckitems>Wreck Retrieval</ordername.retrievewreckitems>
+  <ordernamecontextual.retrievewreckitems>Wreck Retrieval</ordernamecontextual.retrievewreckitems>
+  <orderdialog.retrievewreckitems>Retrieve marked items from wrecks and open water.</orderdialog.retrievewreckitems>
+  <orderdialogself.retrievewreckitems>I'll retrieve marked items from the wreck.</orderdialogself.retrievewreckitems>
+  <orderdialog.dismissed.retrievewreckitems>[name], cancelling wreck retrieval.</orderdialog.dismissed.retrievewreckitems>
+  <orderdialogself.dismissed.retrievewreckitems>Understood, cancelling wreck retrieval.</orderdialogself.dismissed.retrievewreckitems>
+  <ordername.markretrievecontainer>Mark Container For Retrieval</ordername.markretrievecontainer>
+  <ordernamecontextual.markretrievecontainer>Mark Container For Retrieval</ordernamecontextual.markretrievecontainer>
+  <orderdialog.markretrievecontainer>Mark this container for retrieval.</orderdialog.markretrievecontainer>
+  <orderdialogself.markretrievecontainer>I'll mark this container for retrieval.</orderdialogself.markretrievecontainer>
+  <retrieveitems.orderreceived>Got it, starting retrieval.</retrieveitems.orderreceived>
+  <retrieveitems.searching>Searching...</retrieveitems.searching>
+  <retrieveitems.returning>Returning with items...</retrieveitems.returning>
+  <retrieveitems.depositing>Depositing retrieved items.</retrieveitems.depositing>
+  <retrieveitems.done>Loot secured.</retrieveitems.done>
+  <retrieveitems.cancelled>Understood, cancelling retrieval.</retrieveitems.cancelled>
+  <retrieveitems.abort>Retrieval cancelled.</retrieveitems.abort>
+  <retrieveitems.abort.tooinjured>Too injured to continue. Returning to the submarine.</retrieveitems.abort.tooinjured>
+  <retrieveitems.abort.notarget>I can't find an abandoned outpost to loot.</retrieveitems.abort.notarget>
+  <retrieveitems.abort.nostorage>I can't find anywhere appropriate to store the remaining loot.</retrieveitems.abort.nostorage>
+  <retrieveitems.refused>I can only do that while I'm already inside a cleared abandoned outpost or beacon station.</retrieveitems.refused>
+  <retrieveitems.hostiles>I won't start retrieval until the outpost is clear of hostiles.</retrieveitems.hostiles>
+  <retrieveitems.marked>Container marked for retrieval.</retrieveitems.marked>
+  <retrieveitems.unmarked>Container unmarked for retrieval.</retrieveitems.unmarked>
+  <retrievewreckitems.searching>Searching for marked wreck salvage...</retrievewreckitems.searching>
+  <retrievewreckitems.preparing>Preparing diving gear.</retrievewreckitems.preparing>
+  <retrievewreckitems.traveling>Moving to marked salvage.</retrievewreckitems.traveling>
+  <retrievewreckitems.retrieving>Recovering marked salvage.</retrievewreckitems.retrieving>
+  <retrievewreckitems.returning>Returning with salvage.</retrievewreckitems.returning>
+  <retrievewreckitems.depositing>Depositing recovered salvage.</retrievewreckitems.depositing>
+  <retrievewreckitems.done>Wreck salvage secured.</retrievewreckitems.done>
+  <retrievewreckitems.abort.notarget>I can't find any marked wreck salvage.</retrievewreckitems.abort.notarget>
+  <retrievewreckitems.abort.nooxygen>I need a full oxygen tank before leaving the submarine.</retrievewreckitems.abort.nooxygen>
+  <retrievewreckitems.abort.nogear>I need diving gear before leaving the submarine.</retrievewreckitems.abort.nogear>
+  <retrievewreckitems.abort.noairlock>I can't find a usable airlock.</retrievewreckitems.abort.noairlock>
+</infotexts>

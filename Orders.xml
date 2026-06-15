@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Orders>
+  <Order
+    identifier="retrieveitems"
+    category="Maintenance"
+    color="120,205,170,255"
+    appropriatejobs="assistant,mechanic,securityofficer"
+    preferredjobs="assistant,mechanic"
+    assignmentpriority="88"
+    mustsettarget="false"
+    canbegeneralized="true"
+    displaygiverintooltip="true">
+    <sprite texture="%ModDir%/Icons/PickupItemsIcon.png" sourcerect="0,0,64,64" origin="32,32" />
+  </Order>
+  <Order
+    identifier="retrievewreckitems"
+    category="Emergency"
+    color="220,70,70,255"
+    appropriatejobs="assistant,mechanic,securityofficer"
+    preferredjobs="assistant,mechanic"
+    assignmentpriority="88"
+    mustsettarget="false"
+    canbegeneralized="true"
+    displaygiverintooltip="true">
+    <sprite texture="%ModDir%/Icons/PickupItemsIcon.png" sourcerect="0,0,64,64" origin="32,32" />
+  </Order>
+  <Order
+    identifier="markretrievecontainer"
+    color="120,205,170,255"
+    mustsettarget="true"
+    targetallcharacters="true"
+    canbegeneralized="false"
+    displaygiverintooltip="false"
+    targetitemcomponent="ItemContainer">
+    <sprite texture="%ModDir%/Icons/PickupItemsIcon.png" sourcerect="0,0,64,64" origin="32,32" />
+  </Order>
+</Orders>

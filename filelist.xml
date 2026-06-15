@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<contentpackage name="Retrieve Items Order" modversion="1.0.1" gameversion="1.12.7.0">
+  <Orders file="%ModDir%/Orders.xml" />
+  <Text file="%ModDir%/Text/RetrieveItemsEnglish.xml" />
+</contentpackage>
