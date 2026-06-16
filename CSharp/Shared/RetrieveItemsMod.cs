@@ -1336,12 +1336,13 @@ namespace RetrieveItemsOrderMod
         private const float PreTripOxygenRatio = 0.90f;
         private const float EmergencyOxygenRatio = 0.30f;
         private const float SearchRadius = 20000.0f;
-        private const float OpenWaterGridSize = 200.0f;
+        private const float OpenWaterGridSize = 100.0f;
         private const float OpenWaterCloseEnough = 180.0f;
-        private const float OpenWaterWaypointCloseEnough = 175.0f;
+        private const float OpenWaterWaypointCloseEnough = 100.0f;
         private const float OpenWaterRepathInterval = 2.0f;
-        private const float OpenWaterObstacleInflation = 100.0f;
-        private const float OpenWaterNodeClearance = 80.0f;
+        private const float OpenWaterObstacleInflation = 40.0f;
+        private const float OpenWaterNodeClearance = 40.0f;
+        private const int OpenWaterNearestNodeSearchRadius = 20;
 
         private readonly Order sourceOrder;
         private readonly HashSet<Item> initialInventoryItems = new HashSet<Item>();
@@ -1373,6 +1374,7 @@ namespace RetrieveItemsOrderMod
         private float openWaterRepathTimer;
         private float openWaterProgressTimer;
         private float openWaterMovementLogTimer;
+        private float openWaterObstacleLogTimer;
         private float openWaterLastDistance = float.MaxValue;
         private Vector2 lastWorldPosition;
         private int lastCarriedCount;
@@ -2198,11 +2200,25 @@ namespace RetrieveItemsOrderMod
         {
             ClearSubObjective();
             StopOpenWaterFallback();
+            UnmarkRetrievedWreckTarget();
             state = WreckRetrieveState.Finished;
             statusTimer = 0.0f;
             ResetStuckTracking();
             IsCompleted = true;
             LuaCsLogger.Log($"[RetrieveItemsOrder] Wreck retrieval reached submarine for {character.Name}; completing before deposit for vanilla handoff test");
+        }
+
+        private void UnmarkRetrievedWreckTarget()
+        {
+            if (currentTargetItem == null ||
+                currentTargetItem.Removed ||
+                !RetrieveItemsOrderRules.IsMarkedContainer(currentTargetItem))
+            {
+                return;
+            }
+
+            RetrieveItemsOrderRules.SetMarkedContainerState(currentTargetItem, false);
+            LuaCsLogger.Log($"[RetrieveItemsOrder] Unmarked retrieved wreck target for {character.Name}: {currentTargetItem.Name}");
         }
 
         private void UpdateDepositing(float deltaTime)
@@ -2768,6 +2784,7 @@ namespace RetrieveItemsOrderMod
         private bool UpdateOpenWaterNavigation(float deltaTime, Vector2 targetWorldPosition, float closeEnough, string targetLabel)
         {
             usingOpenWaterFallback = true;
+            openWaterObstacleLogTimer -= deltaTime;
 
             float targetDistance = Vector2.Distance(character.WorldPosition, targetWorldPosition);
             if (!IsInOpenWaterControlZone())
@@ -2783,17 +2800,13 @@ namespace RetrieveItemsOrderMod
             }
 
             openWaterRepathTimer -= deltaTime;
-            if (openWaterPath.Count == 0 ||
-                openWaterPathIndex >= openWaterPath.Count ||
+            bool shouldRepath =
                 openWaterRepathTimer <= 0.0f ||
-                Vector2.DistanceSquared(openWaterPathGoal, targetWorldPosition) > OpenWaterGridSize * OpenWaterGridSize)
+                (openWaterPath.Count > 0 && openWaterPathIndex >= openWaterPath.Count) ||
+                (openWaterPath.Count > 0 && Vector2.DistanceSquared(openWaterPathGoal, targetWorldPosition) > OpenWaterGridSize * OpenWaterGridSize);
+            if (shouldRepath)
             {
                 openWaterPath = BuildOpenWaterPath(character.WorldPosition, targetWorldPosition);
-                if (openWaterPath.Count > 1)
-                {
-                    openWaterPath[0] = character.WorldPosition;
-                }
-
                 openWaterPathIndex = 0;
                 openWaterPathGoal = targetWorldPosition;
                 openWaterRepathTimer = OpenWaterRepathInterval;
@@ -2801,9 +2814,25 @@ namespace RetrieveItemsOrderMod
                 LuaCsLogger.Log($"[RetrieveItemsOrder] Open-water path for {character.Name}: target={targetLabel}, nodes={openWaterPath.Count}, distance={targetDistance:0}, obstacles={debugObstacles.Count}, directBlocked={OpenWaterSegmentBlocked(character.WorldPosition, targetWorldPosition, debugObstacles)}, steering=world-override");
                 if (openWaterPath.Count == 0)
                 {
+                    if (TryMoveOutOfExitAirlock(deltaTime, targetDistance, targetWorldPosition))
+                    {
+                        return false;
+                    }
+
                     ReleaseOpenWaterMovementControl();
                     return false;
                 }
+            }
+
+            if (openWaterPath.Count == 0)
+            {
+                if (TryMoveOutOfExitAirlock(deltaTime, targetDistance, targetWorldPosition))
+                {
+                    return false;
+                }
+
+                ReleaseOpenWaterMovementControl();
+                return false;
             }
 
             Vector2 nextPoint = targetWorldPosition;
@@ -2813,6 +2842,16 @@ namespace RetrieveItemsOrderMod
                 if (Vector2.DistanceSquared(character.WorldPosition, nextPoint) > OpenWaterWaypointCloseEnough * OpenWaterWaypointCloseEnough)
                 {
                     break;
+                }
+
+                if (openWaterPathIndex + 1 < openWaterPath.Count)
+                {
+                    List<Rectangle> obstacles = GetOpenWaterObstacles();
+                    Vector2 followingPoint = openWaterPath[openWaterPathIndex + 1];
+                    if (OpenWaterSegmentBlocked(character.WorldPosition, followingPoint, obstacles))
+                    {
+                        break;
+                    }
                 }
 
                 openWaterPathIndex++;
@@ -2847,6 +2886,37 @@ namespace RetrieveItemsOrderMod
 
             ApplyOpenWaterSteering(deltaTime, movement, targetDistance, nextPoint, targetWorldPosition);
             return false;
+        }
+
+        private bool TryMoveOutOfExitAirlock(float deltaTime, float targetDistance, Vector2 targetWorldPosition)
+        {
+            if (travelPhase != WreckTravelPhase.OpenWater ||
+                exitAirlockHull == null ||
+                exitAirlockGap == null ||
+                !character.InWater)
+            {
+                return false;
+            }
+
+            bool nearExitAirlock =
+                character.CurrentHull == exitAirlockHull ||
+                IsCharacterInsideHullBounds(exitAirlockHull) ||
+                Vector2.DistanceSquared(character.WorldPosition, GetGapCenter(exitAirlockGap)) < 900.0f * 900.0f;
+            if (!nearExitAirlock)
+            {
+                return false;
+            }
+
+            OpenExitAirlockDoor(exitAirlockGap);
+            Vector2 exitPoint = GetExternalExitPoint(exitAirlockHull, exitAirlockGap);
+            Vector2 movement = exitPoint - character.WorldPosition;
+            if (movement.LengthSquared() <= 1.0f)
+            {
+                return false;
+            }
+
+            ApplyOpenWaterSteering(deltaTime, movement, targetDistance, exitPoint, targetWorldPosition);
+            return true;
         }
 
         private Vector2 GetOpenWaterMovementVector(Vector2 nextWorldPoint)
@@ -3018,12 +3088,25 @@ namespace RetrieveItemsOrderMod
                 return new List<Vector2> { start, goal };
             }
 
-            Rectangle bounds = GetOpenWaterSearchBounds(start, goal);
-            Point startNode = WorldToOpenWaterNode(start);
-            Point goalNode = WorldToOpenWaterNode(goal);
+            Vector2 startAnchor = GetOpenWaterStartAnchor(start);
+            Rectangle bounds = GetOpenWaterSearchBounds(startAnchor, goal);
+            Point preferredStartNode = WorldToOpenWaterNode(startAnchor);
+            Point preferredGoalNode = WorldToOpenWaterNode(goal);
+            Point? resolvedStartNode = FindNearestOpenWaterNode(preferredStartNode, startAnchor, obstacles, bounds);
+            Point? resolvedGoalNode = FindNearestOpenWaterNode(preferredGoalNode, goal, obstacles, bounds);
+            if (resolvedStartNode == null || resolvedGoalNode == null)
+            {
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Open-water path failed for {character.Name}: resolvedStart={resolvedStartNode.HasValue}, resolvedGoal={resolvedGoalNode.HasValue}, startAnchor=({startAnchor.X:0},{startAnchor.Y:0})");
+                return GetFallbackOpenWaterPath(start, goal, obstacles);
+            }
+
+            Point startNode = resolvedStartNode.Value;
+            Point goalNode = resolvedGoalNode.Value;
             if (startNode == goalNode)
             {
-                return new List<Vector2> { start, goal };
+                return OpenWaterSegmentBlocked(start, goal, obstacles)
+                    ? GetFallbackOpenWaterPath(start, goal, obstacles)
+                    : new List<Vector2> { start, goal };
             }
 
             Dictionary<Point, Point> cameFrom = new Dictionary<Point, Point>();
@@ -3047,9 +3130,12 @@ namespace RetrieveItemsOrderMod
                 closed.Add(current);
                 foreach (Point next in GetOpenWaterNeighbors(current))
                 {
+                    Vector2 currentWorld = OpenWaterNodeToWorld(current);
+                    Vector2 nextWorld = OpenWaterNodeToWorld(next);
                     if (closed.Contains(next) ||
                         !bounds.Contains(next.X, next.Y) ||
-                        OpenWaterNodeBlocked(next, obstacles))
+                        OpenWaterNodeBlocked(next, obstacles) ||
+                        OpenWaterSegmentBlocked(currentWorld, nextWorld, obstacles))
                     {
                         continue;
                     }
@@ -3067,7 +3153,29 @@ namespace RetrieveItemsOrderMod
                 }
             }
 
+            LuaCsLogger.Log($"[RetrieveItemsOrder] Open-water path exhausted for {character.Name}: explored={closed.Count}, bounds=({bounds.X},{bounds.Y},{bounds.Width},{bounds.Height}), startNode=({startNode.X},{startNode.Y}), goalNode=({goalNode.X},{goalNode.Y})");
             return GetFallbackOpenWaterPath(start, goal, obstacles);
+        }
+
+        private Vector2 GetOpenWaterStartAnchor(Vector2 start)
+        {
+            if (travelPhase != WreckTravelPhase.OpenWater ||
+                exitAirlockHull == null ||
+                exitAirlockGap == null)
+            {
+                return start;
+            }
+
+            bool nearExitAirlock =
+                character.CurrentHull == exitAirlockHull ||
+                IsCharacterInsideHullBounds(exitAirlockHull) ||
+                Vector2.DistanceSquared(start, GetGapCenter(exitAirlockGap)) < 900.0f * 900.0f;
+            if (!nearExitAirlock)
+            {
+                return start;
+            }
+
+            return GetExternalExitPoint(exitAirlockHull, exitAirlockGap);
         }
 
         private List<Rectangle> GetOpenWaterObstacles()
@@ -3089,12 +3197,14 @@ namespace RetrieveItemsOrderMod
 
         private List<Vector2> GetFallbackOpenWaterPath(Vector2 start, Vector2 goal, List<Rectangle> obstacles)
         {
-            return new List<Vector2> { start, goal };
+            return OpenWaterSegmentBlocked(start, goal, obstacles)
+                ? new List<Vector2>()
+                : new List<Vector2> { start, goal };
         }
 
         private Rectangle GetOpenWaterSearchBounds(Vector2 start, Vector2 goal)
         {
-            int margin = (int)(OpenWaterGridSize * 6.0f);
+            int margin = (int)Math.Max(OpenWaterGridSize * 12.0f, Vector2.Distance(start, goal) * 1.25f);
             int minX = (int)Math.Floor(Math.Min(start.X, goal.X) - margin);
             int minY = (int)Math.Floor(Math.Min(start.Y, goal.Y) - margin);
             int maxX = (int)Math.Ceiling(Math.Max(start.X, goal.X) + margin);
@@ -3102,6 +3212,52 @@ namespace RetrieveItemsOrderMod
             Point min = WorldToOpenWaterNode(new Vector2(minX, minY));
             Point max = WorldToOpenWaterNode(new Vector2(maxX, maxY));
             return new Rectangle(min.X, min.Y, Math.Max(max.X - min.X, 1), Math.Max(max.Y - min.Y, 1));
+        }
+
+        private Point? FindNearestOpenWaterNode(Point preferredNode, Vector2 preferredWorldPosition, List<Rectangle> obstacles, Rectangle bounds)
+        {
+            if (bounds.Contains(preferredNode.X, preferredNode.Y) && !OpenWaterNodeBlocked(preferredNode, obstacles))
+            {
+                return preferredNode;
+            }
+
+            Point? bestNode = null;
+            float bestDistanceSquared = float.MaxValue;
+            for (int radius = 1; radius <= OpenWaterNearestNodeSearchRadius; radius++)
+            {
+                for (int x = -radius; x <= radius; x++)
+                {
+                    for (int y = -radius; y <= radius; y++)
+                    {
+                        if (Math.Abs(x) != radius && Math.Abs(y) != radius)
+                        {
+                            continue;
+                        }
+
+                        Point candidate = new Point(preferredNode.X + x, preferredNode.Y + y);
+                        Vector2 candidateWorld = OpenWaterNodeToWorld(candidate);
+                        if (!bounds.Contains(candidate.X, candidate.Y) ||
+                            OpenWaterNodeBlocked(candidate, obstacles))
+                        {
+                            continue;
+                        }
+
+                        float distanceSquared = Vector2.DistanceSquared(candidateWorld, preferredWorldPosition);
+                        if (distanceSquared < bestDistanceSquared)
+                        {
+                            bestDistanceSquared = distanceSquared;
+                            bestNode = candidate;
+                        }
+                    }
+                }
+
+                if (bestNode != null)
+                {
+                    return bestNode;
+                }
+            }
+
+            return null;
         }
 
         private static IEnumerable<Point> GetOpenWaterNeighbors(Point node)
@@ -3251,6 +3407,7 @@ namespace RetrieveItemsOrderMod
                     }
 
                     blocked = true;
+                    LogOpenWaterRaycastHit(fixture, hitWorld, start, end, normal, fraction);
                     return 0.0f;
                 }, simStart, simEnd, Category.All);
 
@@ -3280,7 +3437,185 @@ namespace RetrieveItemsOrderMod
                 return true;
             }
 
+            if (IsOpenWaterCharacterBodyHit(fixture))
+            {
+                return true;
+            }
+
+            if (IsOpenWaterHullVolumeHit(fixture))
+            {
+                return true;
+            }
+
+            if (IsOpenWaterTargetItemHit(fixture, hitWorld))
+            {
+                return true;
+            }
+
             return passableGapRects.Any(rect => rect.Contains((int)hitWorld.X, (int)hitWorld.Y));
+        }
+
+        private bool IsOpenWaterTargetItemHit(Fixture fixture, Vector2 hitWorld)
+        {
+            if (currentTargetItem == null || currentTargetItem.Removed)
+            {
+                return false;
+            }
+
+            object fixtureUser = GetFixtureUserData(fixture);
+            object bodyUser = GetBodyUserData(fixture?.Body);
+            if (ReferenceEquals(fixtureUser, currentTargetItem) ||
+                ReferenceEquals(bodyUser, currentTargetItem))
+            {
+                return true;
+            }
+
+            if (fixtureUser is Item fixtureItem && IsOpenWaterTargetRelatedItem(fixtureItem))
+            {
+                return true;
+            }
+
+            if (bodyUser is Item bodyItem && IsOpenWaterTargetRelatedItem(bodyItem))
+            {
+                return true;
+            }
+
+            return Vector2.DistanceSquared(hitWorld, currentTargetItem.WorldPosition) <= OpenWaterCloseEnough * OpenWaterCloseEnough;
+        }
+
+        private bool IsOpenWaterTargetRelatedItem(Item item)
+        {
+            return item == currentTargetItem ||
+                   item?.ParentInventory == currentTargetItem.OwnInventory ||
+                   currentTargetItem.ParentInventory == item?.OwnInventory;
+        }
+
+        private bool IsOpenWaterHullVolumeHit(Fixture fixture)
+        {
+            object fixtureUser = GetFixtureUserData(fixture);
+            object bodyUser = GetBodyUserData(fixture?.Body);
+            return IsHullVolumeUserData(fixtureUser) ||
+                   IsHullVolumeUserData(bodyUser);
+        }
+
+        private static bool IsHullVolumeUserData(object userData)
+        {
+            if (userData == null)
+            {
+                return false;
+            }
+
+            if (userData is Hull)
+            {
+                return true;
+            }
+
+            string typeName = userData.GetType().FullName ?? userData.GetType().Name;
+            return typeName.Equals("Barotrauma.Hull", StringComparison.Ordinal) ||
+                   typeName.EndsWith(".Hull", StringComparison.Ordinal);
+        }
+
+        private bool IsOpenWaterCharacterBodyHit(Fixture fixture)
+        {
+            object fixtureUser = GetFixtureUserData(fixture);
+            object bodyUser = GetBodyUserData(fixture?.Body);
+            return IsCharacterBodyUserData(fixtureUser) ||
+                   IsCharacterBodyUserData(bodyUser);
+        }
+
+        private bool IsCharacterBodyUserData(object userData)
+        {
+            if (userData == null)
+            {
+                return false;
+            }
+
+            if (userData is Character)
+            {
+                return true;
+            }
+
+            string typeName = userData.GetType().FullName ?? userData.GetType().Name;
+            if (typeName.IndexOf("Limb", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+
+            object owner =
+                GetMemberValue(userData, "Character") ??
+                GetMemberValue(userData, "character") ??
+                GetMemberValue(userData, "Owner") ??
+                GetMemberValue(userData, "owner");
+
+            return owner is Character;
+        }
+
+        private void LogOpenWaterRaycastHit(Fixture fixture, Vector2 hitWorld, Vector2 startWorld, Vector2 endWorld, Vector2 normal, float fraction)
+        {
+            if (openWaterObstacleLogTimer > 0.0f)
+            {
+                return;
+            }
+
+            openWaterObstacleLogTimer = 1.0f;
+            LuaCsLogger.Log($"[RetrieveItemsOrder] Open-water raycast blocked for {character.Name}: hit=({hitWorld.X:0},{hitWorld.Y:0}), start=({startWorld.X:0},{startWorld.Y:0}), end=({endWorld.X:0},{endWorld.Y:0}), fraction={fraction:0.00}, normal=({normal.X:0.00},{normal.Y:0.00}), fixture={DescribeObject(fixture)}, body={DescribeObject(fixture?.Body)}, fixtureUser={DescribeObject(GetFixtureUserData(fixture))}, bodyUser={DescribeObject(GetBodyUserData(fixture?.Body))}, categories={fixture?.CollisionCategories.ToString() ?? "<null>"}, collidesWith={fixture?.CollidesWith.ToString() ?? "<null>"}, sensor={IsFixtureSensor(fixture)}");
+        }
+
+        private static object GetFixtureUserData(Fixture fixture)
+        {
+            return GetMemberValue(fixture, "UserData") ??
+                   GetMemberValue(fixture, "userData");
+        }
+
+        private static object GetBodyUserData(Body body)
+        {
+            return GetMemberValue(body, "UserData") ??
+                   GetMemberValue(body, "userData");
+        }
+
+        private static object GetMemberValue(object target, string name)
+        {
+            if (target == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                return AccessTools.Property(target.GetType(), name)?.GetValue(target) ??
+                       AccessTools.Field(target.GetType(), name)?.GetValue(target);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string DescribeObject(object value)
+        {
+            if (value == null)
+            {
+                return "<null>";
+            }
+
+            string typeName = value.GetType().FullName ?? value.GetType().Name;
+            switch (value)
+            {
+                case Item item:
+                    return $"{typeName}:{item.Name}";
+                case Structure _:
+                    return typeName;
+                case Hull hull:
+                    return $"{typeName}:{GetHullName(hull)}";
+                case Door door:
+                    return $"{typeName}:doorOpen={door.IsOpen}";
+                case Character hitCharacter:
+                    return $"{typeName}:{hitCharacter.Name}";
+                case Submarine submarine:
+                    return $"{typeName}:{submarine.Info?.Name}";
+                default:
+                    return typeName;
+            }
         }
 
         private static bool IsFixtureSensor(Fixture fixture)
