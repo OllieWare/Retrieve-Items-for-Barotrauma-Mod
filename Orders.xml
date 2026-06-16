@@ -22,7 +22,7 @@
     mustsettarget="false"
     canbegeneralized="true"
     displaygiverintooltip="true">
-    <sprite texture="%ModDir%/Icons/PickupItemsIcon.png" sourcerect="0,0,64,64" origin="32,32" />
+    <sprite texture="%ModDir%/Icons/WreckPickupIcon.png" sourcerect="0,0,64,64" origin="32,32" />
   </Order>
   <Order
     identifier="markretrievecontainer"
