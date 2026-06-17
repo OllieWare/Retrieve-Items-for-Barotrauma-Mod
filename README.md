@@ -47,8 +47,26 @@ This mod is written to coexist with other order mods, including `Order to Rest`.
 ## Notes
 
 - Outpost detection prefers a docked non-player submarine whose name contains `abandoned`.
-- If your campaign or custom map uses different naming, update `FindTargetOutpost()` in `CSharp/Shared/RetrieveItemsMod.cs`.
+- If your campaign or custom map uses different naming, update `FindTargetLocation()` in `CSharp/Shared/RetrieveItemsOrderRules.cs`.
 - The bot only targets loose items with no parent inventory.
 - The bot aborts when critically injured.
 - Item placement on return now uses `AIObjectiveCleanupItems`, so retrieved items are sorted the same way vanilla cleanup tries to sort loose items on the submarine.
 - The bot depends on vanilla pathing and safety evaluation, so unreachable or very dangerous areas may still be skipped.
+
+## Source Layout
+
+All C# source lives under `CSharp/Shared/` and shares the `RetrieveItemsOrderMod` namespace. LuaCs loads `.cs` files by convention, so no manifest entry is needed.
+
+| File | Purpose |
+|------|---------|
+| `RetrieveItemsPlugin.cs` | `IAssemblyPlugin` entry point: Harmony setup, patch orchestration, dispose |
+| `RetrieveItemsIds.cs` | Static identifier constants (order identifiers, dialog keys, tags) |
+| `RetrieveItemsOrderRules.cs` | Shared rules: target location resolution, container marking, mark relay, safety checks |
+| `AIObjectiveRetrieveItems.cs` | Outpost retrieval objective: searching, returning, depositing |
+| `AIObjectiveRetrieveWreckItems.cs` | Wreck retrieval objective: state machine, airlock, diving gear, inventory |
+| `AIObjectiveRetrieveWreckItems.OpenWater.cs` | Partial class: open-water A* pathfinding and physics navigation |
+| `Patches/CreateObjectivePatch.cs` | Harmony patch routing custom orders to the mod's objective classes |
+| `Patches/SetOrderSpeechPatch.cs` | Harmony patch for mark-container speech and dismissal handling |
+| `Patches/MarkContainerChatRelayPatch.cs` | Harmony patch consuming hidden mark-relay chat messages |
+| `Patches/CrewManagerContextualOrderPatch.cs` | Harmony patch adding "mark container" button to the crew order UI |
+| `Patches/MarkedContainerHudPatchShared.cs` | Harmony patch drawing marked-container icons on the HUD |
