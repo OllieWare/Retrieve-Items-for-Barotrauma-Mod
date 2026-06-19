@@ -27,7 +27,7 @@ namespace RetrieveItemsOrderMod
         private enum WreckTravelPhase
         {
             ToAirlock,
-            ExitingAirlock,
+            VanillaExit,
             OpenWater
         }
 
@@ -62,7 +62,6 @@ namespace RetrieveItemsOrderMod
         private Hull exitAirlockHull;
         private Gap exitAirlockGap;
         private WreckTravelPhase travelPhase = WreckTravelPhase.ToAirlock;
-        private bool exitAirlockDoorCommanded;
         private float statusTimer;
         private float stuckTimer;
         private float openWaterRepathTimer;
@@ -74,10 +73,6 @@ namespace RetrieveItemsOrderMod
         private List<Rectangle> openWaterCachedObstacles;
         private int openWaterFailedRepathCount;
         private int openWaterGiveUpCount;
-        private float airlockCycleTimer;
-        private bool airlockCycleClosingPhase;
-        private float airlockCycleCooldown;
-        private float airlockExitWaitTimer;
         private Vector2 lastWorldPosition;
         private int lastCarriedCount;
         private bool usingOpenWaterFallback;
@@ -338,9 +333,9 @@ namespace RetrieveItemsOrderMod
                 return;
             }
 
-            if (travelPhase == WreckTravelPhase.ExitingAirlock)
+            if (travelPhase == WreckTravelPhase.VanillaExit)
             {
-                UpdateExitingAirlock(deltaTime);
+                UpdateVanillaExit(deltaTime);
                 return;
             }
 
@@ -497,11 +492,6 @@ namespace RetrieveItemsOrderMod
             StopOpenWaterFallback();
             exitAirlockHull = null;
             exitAirlockGap = null;
-            exitAirlockDoorCommanded = false;
-            airlockCycleTimer = 0.0f;
-            airlockCycleClosingPhase = false;
-            airlockCycleCooldown = 0.0f;
-            airlockExitWaitTimer = 0.0f;
             travelPhase = WreckTravelPhase.ToAirlock;
             state = WreckRetrieveState.Traveling;
             statusTimer = 0.0f;
@@ -534,7 +524,7 @@ namespace RetrieveItemsOrderMod
             if (character.CurrentHull == exitAirlockHull || IsCharacterInsideHullBounds(exitAirlockHull))
             {
                 ClearSubObjective();
-                travelPhase = WreckTravelPhase.ExitingAirlock;
+                travelPhase = WreckTravelPhase.VanillaExit;
                 ResetStuckTracking();
                 LuaCsLogger.Log($"[RetrieveItemsOrder] Wreck retrieval reached exit airlock for {character.Name}: hull={GetHullName(exitAirlockHull)}");
                 return;
@@ -552,7 +542,7 @@ namespace RetrieveItemsOrderMod
                 currentSubObjective = CreateGoToHullObjective(exitAirlockHull, closeEnough: 80.0f);
                 if (currentSubObjective == null)
                 {
-                    travelPhase = WreckTravelPhase.ExitingAirlock;
+                    travelPhase = WreckTravelPhase.VanillaExit;
                     ResetStuckTracking();
                     return;
                 }
@@ -562,7 +552,7 @@ namespace RetrieveItemsOrderMod
             }
         }
 
-        private void UpdateExitingAirlock(float deltaTime)
+        private void UpdateVanillaExit(float deltaTime)
         {
             if (exitAirlockHull == null || exitAirlockGap == null)
             {
@@ -570,48 +560,38 @@ namespace RetrieveItemsOrderMod
                 return;
             }
 
-            if (character.CurrentHull != exitAirlockHull && !IsCharacterInsideHullBounds(exitAirlockHull))
-            {
-                ClearSubObjective();
-                travelPhase = WreckTravelPhase.OpenWater;
-                ReleaseExitAirlockDoorCommand();
-                StartOpenWaterFallback();
-                return;
-            }
-
-            if (!CloseInteriorAirlockDoors(exitAirlockHull, exitAirlockGap))
-            {
-                ReleaseOpenWaterMovementControl();
-                return;
-            }
-
             Door exitDoor = exitAirlockGap.ConnectedDoor;
             if (exitDoor != null && !exitDoor.IsOpen)
             {
                 ToggleDoor(exitDoor, true);
-                airlockExitWaitTimer = 0.0f;
-            }
-
-            if (exitDoor != null && exitDoor.IsOpen)
-            {
-                airlockExitWaitTimer += deltaTime;
-                character.OverrideMovement = null;
-                ClearOpenWaterMovementInputs();
-
-                if (airlockExitWaitTimer > 2.0f)
-                {
-                    LuaCsLogger.Log($"[RetrieveItemsOrder] Exit airlock door open but {character.Name} still inside after {airlockExitWaitTimer:0.0}s; transitioning to open water");
-                    ClearSubObjective();
-                    travelPhase = WreckTravelPhase.OpenWater;
-                    ReleaseExitAirlockDoorCommand();
-                    StartOpenWaterFallback();
-                    return;
-                }
-
                 return;
             }
 
-            ReleaseOpenWaterMovementControl();
+            bool isOutsideAirlock = character.CurrentHull != exitAirlockHull && !IsCharacterInsideHullBounds(exitAirlockHull);
+            if (isOutsideAirlock)
+            {
+                ClearSubObjective();
+                travelPhase = WreckTravelPhase.OpenWater;
+                StartOpenWaterFallback();
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Wreck retrieval exited airlock for {character.Name}; transitioning to open water navigation");
+                return;
+            }
+
+            Vector2 exitPoint = GetExternalExitPoint(exitAirlockHull, exitAirlockGap);
+            Vector2 movement = exitPoint - character.WorldPosition;
+            if (movement.LengthSquared() > 1.0f)
+            {
+                Vector2 movementVector = Vector2.Normalize(movement);
+                try
+                {
+                    SteeringManager?.SteeringManual(deltaTime, movementVector);
+                }
+                catch { }
+                character.SetInput(InputType.Left, movementVector.X < -0.15f, false);
+                character.SetInput(InputType.Right, movementVector.X > 0.15f, false);
+                character.SetInput(InputType.Up, movementVector.Y > 0.15f, false);
+                character.SetInput(InputType.Down, movementVector.Y < -0.15f, false);
+            }
         }
 
         private void ResolveExitAirlock()
@@ -725,23 +705,6 @@ namespace RetrieveItemsOrderMod
             return gapCenter + (direction * 350.0f);
         }
 
-        private void OpenExitAirlockDoor(Gap gap)
-        {
-            Door door = gap?.ConnectedDoor;
-            if (door == null)
-            {
-                return;
-            }
-
-            door.BotsShouldKeepOpen = false;
-            ToggleDoor(door, true);
-            if (!exitAirlockDoorCommanded)
-            {
-                exitAirlockDoorCommanded = true;
-                LuaCsLogger.Log($"[RetrieveItemsOrder] Wreck retrieval opened exit airlock door for {character.Name}: gap={gap.Name ?? "<unnamed>"}");
-            }
-        }
-
         private void ToggleDoor(Door door, bool open)
         {
             if (door == null)
@@ -756,58 +719,6 @@ namespace RetrieveItemsOrderMod
             }
 
             door.ToggleState(ActionType.OnUse, character);
-        }
-
-        private bool CloseInteriorAirlockDoors(Hull airlockHull, Gap exteriorGap)
-        {
-            bool allClosed = true;
-            foreach (Gap gap in GetConnectedGaps(airlockHull))
-            {
-                if (gap == null || gap == exteriorGap || GetOtherLinkedHull(gap, airlockHull) == null)
-                {
-                    continue;
-                }
-
-                Door door = gap.ConnectedDoor;
-                if (door == null)
-                {
-                    continue;
-                }
-
-                door.BotsShouldKeepOpen = false;
-                if (door.IsOpen)
-                {
-                    ToggleDoor(door, false);
-                    allClosed = false;
-                }
-            }
-
-            return allClosed;
-        }
-
-        private void ReleaseExitAirlockDoorCommand()
-        {
-            Door door = exitAirlockGap?.ConnectedDoor;
-            if (door != null)
-            {
-                door.BotsShouldKeepOpen = false;
-                ToggleDoor(door, false);
-            }
-
-            exitAirlockDoorCommanded = false;
-        }
-
-        private void ApplyAirlockExitMovement(float deltaTime, Vector2 exitPoint)
-        {
-            Vector2 movement = exitPoint - character.WorldPosition;
-            if (movement.LengthSquared() <= 1.0f)
-            {
-                ReleaseOpenWaterMovementControl();
-                return;
-            }
-
-            Vector2 movementVector = Vector2.Normalize(movement);
-            ApplyOpenWaterMovementInputs(deltaTime, movementVector);
         }
 
         private AIObjective CreateGoToHullObjective(Hull hull, float closeEnough)
@@ -1515,7 +1426,6 @@ namespace RetrieveItemsOrderMod
 
         private void BeginReturning()
         {
-            ReleaseExitAirlockDoorCommand();
             StopOpenWaterFallback();
             ClearSubObjective();
             state = WreckRetrieveState.Returning;
@@ -1582,7 +1492,6 @@ namespace RetrieveItemsOrderMod
 
         private void ClearTarget()
         {
-            ReleaseExitAirlockDoorCommand();
             StopOpenWaterFallback();
             currentTargetItem = null;
             pendingOxygenTank = null;

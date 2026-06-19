@@ -12,17 +12,16 @@ namespace RetrieveItemsOrderMod
 {
     internal sealed partial class AIObjectiveRetrieveWreckItems : AIObjective
     {
-        private const float OpenWaterGridSize = 100.0f;
+        private const float OpenWaterGridSize = 80.0f;
         private const float OpenWaterCloseEnough = 180.0f;
-        private const float OpenWaterWaypointCloseEnough = 100.0f;
+        private const float OpenWaterWaypointCloseEnough = 80.0f;
         private const float OpenWaterRepathInterval = 2.0f;
         private const float OpenWaterDirectGoalThreshold = 300.0f;
-        private const float OpenWaterObstacleInflation = 25.0f;
-        private const float OpenWaterNodeClearance = 25.0f;
-        private const float OpenWaterRaycastStartClearance = 14.0f;
-        private const float OpenWaterCharacterHalfWidth = 15.0f;
+        private const float OpenWaterObstacleInflation = 15.0f;
+        private const float OpenWaterNodeClearance = 15.0f;
+        private const float OpenWaterRaycastStartClearance = 20.0f;
+        private const float OpenWaterCharacterHalfWidth = 10.0f;
         private const int OpenWaterNearestNodeSearchRadius = 20;
-        private const float OpenWaterAirlockDrainTime = 10.0f;
         private float openWaterScaledClearance = OpenWaterNodeClearance;
         private List<Rectangle> openWaterScaledObstacles = null;
 
@@ -57,9 +56,6 @@ namespace RetrieveItemsOrderMod
             openWaterCachedObstacles = null;
             openWaterScaledObstacles = null;
             openWaterGiveUpCount = 0;
-            airlockCycleTimer = 0.0f;
-            airlockCycleClosingPhase = false;
-            airlockCycleCooldown = 0.0f;
             openWaterPath.Clear();
             openWaterPathIndex = 0;
             openWaterSteering = null;
@@ -181,7 +177,7 @@ namespace RetrieveItemsOrderMod
                 {
                     List<Rectangle> obstacles = openWaterScaledObstacles ?? GetOpenWaterObstacles();
                     Vector2 followingPoint = openWaterPath[openWaterPathIndex + 1];
-                    if (OpenWaterSegmentBlocked(character.WorldPosition, followingPoint, obstacles))
+                    if (OpenWaterSegmentBlockedByRectangles(character.WorldPosition, followingPoint, obstacles))
                     {
                         break;
                     }
@@ -209,7 +205,7 @@ namespace RetrieveItemsOrderMod
                 }
 
                 Vector2 candidatePoint = openWaterPath[candidateIndex];
-                if (OpenWaterSegmentBlocked(character.WorldPosition, candidatePoint, skipObstacles))
+                if (OpenWaterSegmentBlockedByRectangles(character.WorldPosition, candidatePoint, skipObstacles))
                 {
                     break;
                 }
@@ -232,7 +228,7 @@ namespace RetrieveItemsOrderMod
             {
                 List<Rectangle> firstSegObstacles = openWaterScaledObstacles ?? GetOpenWaterObstacles();
                 Vector2 secondWaypoint = openWaterPath[1];
-                if (OpenWaterSegmentBlocked(character.WorldPosition, secondWaypoint, firstSegObstacles))
+                if (OpenWaterSegmentBlockedByRectangles(character.WorldPosition, secondWaypoint, firstSegObstacles))
                 {
                     Vector2 toSecond = Vector2.Normalize(secondWaypoint - character.WorldPosition);
                     Vector2 perpA = new Vector2(-toSecond.Y, toSecond.X);
@@ -334,12 +330,6 @@ namespace RetrieveItemsOrderMod
                 return false;
             }
 
-            if (airlockCycleCooldown > 0.0f)
-            {
-                airlockCycleCooldown -= deltaTime;
-                return false;
-            }
-
             bool nearExitAirlock =
                 character.CurrentHull == exitAirlockHull ||
                 IsCharacterInsideHullBounds(exitAirlockHull) ||
@@ -355,53 +345,13 @@ namespace RetrieveItemsOrderMod
                 return false;
             }
 
-            if (!airlockCycleClosingPhase && !exitDoor.IsOpen)
+            if (!exitDoor.IsOpen)
             {
-                OpenExitAirlockDoor(exitAirlockGap);
-                Vector2 exitPoint = GetExternalExitPoint(exitAirlockHull, exitAirlockGap);
-                Vector2 movement = exitPoint - character.WorldPosition;
-                if (movement.LengthSquared() <= 1.0f)
-                {
-                    return false;
-                }
-                ApplyOpenWaterSteering(deltaTime, movement, targetDistance, exitPoint, targetWorldPosition);
-                return true;
+                ToggleDoor(exitDoor, true);
             }
 
-            if (!airlockCycleClosingPhase && exitDoor.IsOpen)
+            if (exitDoor.IsOpen)
             {
-                airlockCycleClosingPhase = true;
-                airlockCycleTimer = 0.0f;
-                CloseInteriorAirlockDoors(exitAirlockHull, exitAirlockGap);
-                ToggleDoor(exitDoor, false);
-                LuaCsLogger.Log($"[RetrieveItemsOrder] Airlock cycle: closing exit door for {character.Name} (door.IsOpen={exitDoor.IsOpen}, openState={exitDoor.OpenState:0.00})");
-                return true;
-            }
-
-            if (airlockCycleClosingPhase)
-            {
-                if (exitDoor.IsOpen)
-                {
-                    ToggleDoor(exitDoor, false);
-                }
-
-                airlockCycleTimer += deltaTime;
-                if (airlockCycleTimer % 1.0f < deltaTime)
-                {
-                    LuaCsLogger.Log($"[RetrieveItemsOrder] Airlock cycle drain wait for {character.Name}: timer={airlockCycleTimer:0.0}/{OpenWaterAirlockDrainTime:0.0}s, doorIsOpen={exitDoor.IsOpen}, openState={exitDoor.OpenState:0.00}");
-                }
-                if (airlockCycleTimer < OpenWaterAirlockDrainTime)
-                {
-                    character.OverrideMovement = null;
-                    ClearOpenWaterMovementInputs();
-                    return true;
-                }
-
-                airlockCycleClosingPhase = false;
-                airlockCycleTimer = 0.0f;
-                airlockCycleCooldown = 5.0f;
-                OpenExitAirlockDoor(exitAirlockGap);
-                LuaCsLogger.Log($"[RetrieveItemsOrder] Airlock cycle: reopening exit door for {character.Name}; water should rush in and push character");
                 Vector2 exitPoint = GetExternalExitPoint(exitAirlockHull, exitAirlockGap);
                 Vector2 movement = exitPoint - character.WorldPosition;
                 if (movement.LengthSquared() <= 1.0f)
@@ -481,11 +431,6 @@ namespace RetrieveItemsOrderMod
         {
             Hull currentHull = character.CurrentHull;
             if (currentHull == null)
-            {
-                return true;
-            }
-
-            if (travelPhase == WreckTravelPhase.OpenWater && character.InWater)
             {
                 return true;
             }
@@ -631,8 +576,30 @@ namespace RetrieveItemsOrderMod
             }
 
             float savedClearance = openWaterScaledClearance;
+            float relaxedInflation = Math.Max(scaledInflation * 0.6f, 5.0f);
+            float relaxedClearance = OpenWaterNodeClearance * 0.5f;
+            openWaterScaledClearance = relaxedClearance;
+            List<Rectangle> relaxedObstacles = GetNearbyObstacles(start, goal, relaxedInflation);
+            LuaCsLogger.Log($"[RetrieveItemsOrder] Trying relaxed fallback for {character.Name}: relaxedInflation={relaxedInflation:0}, relaxedClearance={relaxedClearance:0}, relaxedObstacles={relaxedObstacles.Count}");
+            List<Vector2> relaxedResult = TryBuildPathWithGrid(start, goal, startAnchor, bounds, relaxedObstacles, OpenWaterGridSize);
+            if (relaxedResult != null)
+            {
+                openWaterScaledObstacles = relaxedObstacles;
+                return PrependStartPosition(relaxedResult, start);
+            }
+
+            float relaxedFineGrid = OpenWaterGridSize * 0.5f;
+            Rectangle relaxedFineBounds = GetOpenWaterSearchBounds(startAnchor, goal, relaxedFineGrid);
+            LuaCsLogger.Log($"[RetrieveItemsOrder] Trying relaxed fine grid ({relaxedFineGrid:0}) for {character.Name}");
+            List<Vector2> relaxedFineResult = TryBuildPathWithGrid(start, goal, startAnchor, relaxedFineBounds, relaxedObstacles, relaxedFineGrid);
+            if (relaxedFineResult != null)
+            {
+                openWaterScaledObstacles = relaxedObstacles;
+                return PrependStartPosition(relaxedFineResult, start);
+            }
+
             openWaterScaledClearance = 0.0f;
-            float reducedInflation = Math.Max(scaledInflation * 0.4f, 5.0f);
+            float reducedInflation = Math.Max(relaxedInflation * 0.67f, 5.0f);
             List<Rectangle> reducedObstacles = GetNearbyObstacles(start, goal, reducedInflation);
             LuaCsLogger.Log($"[RetrieveItemsOrder] Trying zero-clearance fallback for {character.Name}: reducedInflation={reducedInflation:0}, reducedObstacles={reducedObstacles.Count}");
             List<Vector2> zeroClearanceResult = TryBuildPathWithGrid(start, goal, startAnchor, bounds, reducedObstacles, OpenWaterGridSize);
@@ -1116,6 +1083,34 @@ namespace RetrieveItemsOrderMod
                 return true;
             }
 
+            bool rectangleBlocked = OpenWaterSegmentBlockedByRectangles(start, end, obstacles);
+            if (rectangleBlocked)
+            {
+                return true;
+            }
+
+            Vector2 direction = end - start;
+            float distance = direction.Length();
+            if (distance > 1.0f)
+            {
+                float clearanceRatio = openWaterScaledClearance / OpenWaterNodeClearance;
+                float halfWidth = OpenWaterCharacterHalfWidth * clearanceRatio;
+                Vector2 perpendicular = new Vector2(-direction.Y, direction.X) * (halfWidth / distance);
+                if (perpendicular.LengthSquared() > 0.01f)
+                {
+                    if (OpenWaterPhysicsSegmentBlocked(start + perpendicular, end + perpendicular) ||
+                        OpenWaterPhysicsSegmentBlocked(start - perpendicular, end - perpendicular))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private bool OpenWaterSegmentBlockedByRectangles(Vector2 start, Vector2 end, List<Rectangle> obstacles)
+        {
             Vector2 direction = end - start;
             float distance = direction.Length();
             int steps = Math.Max((int)(distance / (OpenWaterGridSize * 0.5f)), 1);
@@ -1147,15 +1142,6 @@ namespace RetrieveItemsOrderMod
                     {
                         return true;
                     }
-                }
-            }
-
-            if (perpendicular.LengthSquared() > 0.01f)
-            {
-                if (OpenWaterPhysicsSegmentBlocked(start + perpendicular, end + perpendicular) ||
-                    OpenWaterPhysicsSegmentBlocked(start - perpendicular, end - perpendicular))
-                {
-                    return true;
                 }
             }
 

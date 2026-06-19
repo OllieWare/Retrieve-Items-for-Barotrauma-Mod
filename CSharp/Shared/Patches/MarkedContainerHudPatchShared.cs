@@ -82,7 +82,7 @@ namespace RetrieveItemsOrderMod
                     return;
                 }
 
-                LuaCsLogger.Log($"[RetrieveItemsOrder] Texture type: {texture.GetType().FullName}, sprite size: {sprite.size}");
+                // LuaCsLogger.Log($"[RetrieveItemsOrder] Texture type: {texture.GetType().FullName}, sprite size: {sprite.size}");
 
                 int drawnCount = 0;
                 foreach (Item container in Item.ItemList)
@@ -145,7 +145,7 @@ namespace RetrieveItemsOrderMod
 
                 if (drawnCount > 0)
                 {
-                    LuaCsLogger.Log($"[RetrieveItemsOrder] Drew {drawnCount} icons");
+                    // LuaCsLogger.Log($"[RetrieveItemsOrder] Drew {drawnCount} icons");
                 }
             }
             catch (Exception ex)
