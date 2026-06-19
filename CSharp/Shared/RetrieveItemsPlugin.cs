@@ -13,7 +13,6 @@ namespace RetrieveItemsOrderMod
     public sealed class RetrieveItemsPlugin : IAssemblyPlugin
     {
         private static Harmony harmony;
-        private static bool attemptedHudPatch;
         private static bool hudPatchApplied;
 
         public void Initialize()
@@ -140,62 +139,60 @@ namespace RetrieveItemsOrderMod
 
         private static void TryPatchMarkedContainerHud(string source)
         {
-            if (attemptedHudPatch || harmony == null)
+            if (hudPatchApplied || harmony == null)
             {
-                if (attemptedHudPatch)
-                {
-                    // LuaCsLogger.Log($"[RetrieveItemsOrder] HUD patch already attempted from {source}, applied={hudPatchApplied}");
-                }
                 return;
             }
 
-            attemptedHudPatch = true;
             try
             {
                 Type hudType = AccessTools.TypeByName("Barotrauma.CharacterHUD");
-                // LuaCsLogger.Log($"[RetrieveItemsOrder] HUD patch lookup CharacterHUD from {source}: {(hudType != null ? hudType.FullName : "<null>")}");
                 if (hudType == null)
                 {
-                    LuaCsLogger.Log("[RetrieveItemsOrder] Skipping marked-container HUD patch; CharacterHUD type unavailable");
+                    LuaCsLogger.Log($"[RetrieveItemsOrder] HUD patch skip from {source}: CharacterHUD type not found (likely server)");
                     return;
                 }
 
                 Type spriteBatchType = AccessTools.TypeByName("Microsoft.Xna.Framework.Graphics.SpriteBatch");
-                // LuaCsLogger.Log($"[RetrieveItemsOrder] HUD patch lookup SpriteBatch from {source}: {(spriteBatchType != null ? spriteBatchType.FullName : "<null>")}");
 
                 var targetMethod =
                     (spriteBatchType != null
                         ? AccessTools.Method(hudType, "Draw", new[] { spriteBatchType, typeof(Character), typeof(Camera) })
-                        : null)
-                    ?? hudType
-                        .GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
-                        .FirstOrDefault(m =>
-                        {
-                            if (m.Name != "Draw") { return false; }
-                            var p = m.GetParameters();
-                            return p.Length == 3 &&
-                                   p[0].ParameterType.Name == "SpriteBatch" &&
-                                   p[1].ParameterType.FullName == typeof(Character).FullName &&
-                                   p[2].ParameterType.FullName == typeof(Camera).FullName;
-                        });
+                        : null);
+
+                if (targetMethod == null)
+                {
+                    var allDraws = hudType
+                        .GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
+                        .Where(m => m.Name == "Draw")
+                        .ToList();
+                    LuaCsLogger.Log($"[RetrieveItemsOrder] HUD patch from {source}: AccessTools failed, found {allDraws.Count} Draw methods. SpriteBatch type: {(spriteBatchType != null ? spriteBatchType.FullName : "null")}");
+                    foreach (var m in allDraws)
+                    {
+                        string parms = string.Join(", ", m.GetParameters().Select(p => $"{p.ParameterType.Name} {p.Name}"));
+                        LuaCsLogger.Log($"[RetrieveItemsOrder]   Draw({parms}) IsStatic={m.IsStatic}");
+                    }
+
+                    targetMethod = allDraws.FirstOrDefault(m =>
+                    {
+                        var p = m.GetParameters();
+                        return p.Length == 3 &&
+                               p[0].ParameterType.Name == "SpriteBatch" &&
+                               p[1].ParameterType.FullName == typeof(Character).FullName &&
+                               p[2].ParameterType.FullName == typeof(Camera).FullName;
+                    });
+                }
 
                 var postfixMethod = AccessTools.Method(typeof(MarkedContainerHudPatchShared), nameof(MarkedContainerHudPatchShared.Postfix));
-                // LuaCsLogger.Log($"[RetrieveItemsOrder] HUD patch draw target from {source}: {targetMethod}");
-                if (targetMethod != null)
-                {
-                    string parameterSummary = string.Join(", ", targetMethod.GetParameters().Select(p => p.ParameterType.FullName ?? p.ParameterType.Name));
-                    // LuaCsLogger.Log($"[RetrieveItemsOrder] HUD patch draw params from {source}: {parameterSummary}");
-                }
-                // LuaCsLogger.Log($"[RetrieveItemsOrder] HUD patch postfix from {source}: {postfixMethod}");
                 if (targetMethod == null || postfixMethod == null)
                 {
-                    LuaCsLogger.Log("[RetrieveItemsOrder] Skipping marked-container HUD patch; draw method unavailable");
+                    LuaCsLogger.Log($"[RetrieveItemsOrder] HUD patch from {source}: targetMethod={targetMethod}, postfixMethod={postfixMethod}");
                     return;
                 }
 
                 harmony.Patch(targetMethod, postfix: new HarmonyMethod(postfixMethod));
                 hudPatchApplied = true;
-                // LuaCsLogger.Log($"[RetrieveItemsOrder] Patched marked-container HUD overlay: {targetMethod}");
+                LuaCsLogger.Log($"[RetrieveItemsOrder] HUD patch applied from {source}: {targetMethod.DeclaringType?.Name}.{targetMethod.Name}");
             }
             catch (Exception ex)
             {

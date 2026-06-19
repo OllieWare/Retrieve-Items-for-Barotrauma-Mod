@@ -12,7 +12,6 @@ namespace RetrieveItemsOrderMod
     public static class RetrieveItemsOrderRules
     {
         private const string MarkRelayPrefix = "__retrieveitems_mark__";
-        private static readonly HashSet<Item> markedContainers = new HashSet<Item>();
         private static readonly Dictionary<Item, int> markVersions = new Dictionary<Item, int>();
 
         public static void EnsureOrderDisplayData(Order order)
@@ -97,7 +96,6 @@ namespace RetrieveItemsOrderMod
 
         public static bool ToggleMarkedContainer(Item container)
         {
-            CleanupMarkedContainers();
             if (container == null)
             {
                 return false;
@@ -309,7 +307,6 @@ namespace RetrieveItemsOrderMod
 
         public static void SetMarkedContainerState(Item container, bool marked)
         {
-            CleanupMarkedContainers();
             if (container == null)
             {
                 return;
@@ -317,18 +314,21 @@ namespace RetrieveItemsOrderMod
 
             if (!marked)
             {
-                markedContainers.Remove(container);
                 RestoreContainerVisual(container);
-                // LuaCsLogger.Log($"[RetrieveItemsOrder] Unmarked container state: {container.Name}");
                 return;
             }
 
-            markedContainers.Add(container);
             markVersions.TryGetValue(container, out int version);
             markVersions[container] = version + 1;
-            container.ExternalHighlight = true;
             container.AddTag(RetrieveItemsIds.MarkedContainerTag);
-            // LuaCsLogger.Log($"[RetrieveItemsOrder] Marked container state: {container.Name}");
+
+            if (markVersions.Count > 100)
+            {
+                foreach (var key in markVersions.Keys.Where(k => k == null || k.Removed).ToList())
+                {
+                    markVersions.Remove(key);
+                }
+            }
         }
 
         public static bool IsServerSideRuntime()
@@ -349,8 +349,7 @@ namespace RetrieveItemsOrderMod
 
         public static bool IsMarkedContainer(Item container)
         {
-            CleanupMarkedContainers();
-            return container != null && markedContainers.Contains(container);
+            return container != null && !container.Removed && container.HasTag(RetrieveItemsIds.MarkedContainerTag);
         }
 
         public static int GetMarkVersion(Item container)
@@ -366,32 +365,19 @@ namespace RetrieveItemsOrderMod
 
         public static IEnumerable<Item> GetMarkedContainers(Submarine targetOutpost)
         {
-            CleanupMarkedContainers();
-            return markedContainers
-                .Where(container =>
-                    container != null &&
-                    !container.Removed &&
-                    container.Submarine == targetOutpost)
-                .Concat(Item.ItemList.Where(container =>
-                    container != null &&
-                    !container.Removed &&
-                    container.Submarine == targetOutpost &&
-                    container.HasTag(RetrieveItemsIds.MarkedContainerTag)))
-                .Distinct()
-                .ToList();
+            return Item.ItemList.Where(item =>
+                item != null &&
+                !item.Removed &&
+                item.Submarine == targetOutpost &&
+                item.HasTag(RetrieveItemsIds.MarkedContainerTag)).ToList();
         }
 
         public static IEnumerable<Item> GetMarkedContainers()
         {
-            CleanupMarkedContainers();
-            return markedContainers
-                .Where(container => container != null && !container.Removed)
-                .Concat(Item.ItemList.Where(container =>
-                    container != null &&
-                    !container.Removed &&
-                    container.HasTag(RetrieveItemsIds.MarkedContainerTag)))
-                .Distinct()
-                .ToList();
+            return Item.ItemList.Where(item =>
+                item != null &&
+                !item.Removed &&
+                item.HasTag(RetrieveItemsIds.MarkedContainerTag)).ToList();
         }
 
         public static Item GetOrderTargetItem(Order order)
@@ -418,22 +404,12 @@ namespace RetrieveItemsOrderMod
             }
         }
 
-        private static void CleanupMarkedContainers()
-        {
-            foreach (Item container in markedContainers.Where(container => container == null || container.Removed).ToList())
-            {
-                RestoreContainerVisual(container);
-                markedContainers.Remove(container);
-            }
-        }
-
         public static void ClearMarkedContainers()
         {
-            foreach (Item container in markedContainers.ToList())
+            foreach (Item container in GetMarkedContainers().ToList())
             {
                 RestoreContainerVisual(container);
             }
-            markedContainers.Clear();
         }
 
         private static void RestoreContainerVisual(Item container)
@@ -443,7 +419,6 @@ namespace RetrieveItemsOrderMod
                 return;
             }
 
-            container.ExternalHighlight = false;
             container.RemoveTag(RetrieveItemsIds.MarkedContainerTag);
         }
 
