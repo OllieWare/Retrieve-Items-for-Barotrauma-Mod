@@ -9,7 +9,7 @@ namespace RetrieveItemsOrderMod
 {
     internal static class MarkedContainerHudPatchShared
     {
-        private const float MarkerScale = 0.5f;
+        private const float MarkerScale = 0.75f;
         private const float MaxDrawDistance = 450.0f;
 
         private static MethodInfo spriteBatchDrawTexture;
@@ -26,7 +26,7 @@ namespace RetrieveItemsOrderMod
                     return;
                 }
 
-                OrderPrefab prefab = RetrieveItemsOrderRules.GetOrderPrefab(RetrieveItemsIds.WreckOrderIdentifier);
+                OrderPrefab prefab = RetrieveItemsOrderRules.GetOrderPrefab(RetrieveItemsIds.MarkedContainerHudIdentifier);
                 if (prefab?.SymbolSprite == null)
                 {
                     return;
@@ -73,10 +73,12 @@ namespace RetrieveItemsOrderMod
 
                 Sprite sprite = prefab.SymbolSprite;
 
-                object texture = sprite.Texture;
+                object texture = AccessTools.Property(sprite.GetType(), "Texture")?.GetValue(sprite)
+                    ?? AccessTools.Field(sprite.GetType(), "texture")?.GetValue(sprite)
+                    ?? AccessTools.Field(sprite.GetType(), "Texture")?.GetValue(sprite);
                 if (texture == null)
                 {
-                    LuaCsLogger.Log("[RetrieveItemsOrder] Sprite.Texture is null");
+                    LuaCsLogger.Log("[RetrieveItemsOrder] Sprite texture not found via reflection");
                     return;
                 }
 

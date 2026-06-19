@@ -7,6 +7,7 @@ namespace RetrieveItemsOrderMod
         public static readonly Identifier OrderIdentifier = "retrieveitems".ToIdentifier();
         public static readonly Identifier WreckOrderIdentifier = "retrievewreckitems".ToIdentifier();
         public static readonly Identifier MarkContainerOrderIdentifier = "markretrievecontainer".ToIdentifier();
+        public static readonly Identifier MarkedContainerHudIdentifier = "markedcontainerhud".ToIdentifier();
         public static readonly Identifier MarkedContainerTag = "retrieveitemsmarked".ToIdentifier();
         public static readonly Identifier SearchDialog = "retrieveitems.searching".ToIdentifier();
         public static readonly Identifier ReturnDialog = "retrieveitems.returning".ToIdentifier();

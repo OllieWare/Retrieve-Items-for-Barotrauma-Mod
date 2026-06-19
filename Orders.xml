@@ -3,7 +3,7 @@
   <Order
     identifier="retrieveitems"
     category="Maintenance"
-    color="120,205,170,255"
+    color="0,190,255,255"
     appropriatejobs="assistant,mechanic,securityofficer"
     preferredjobs="assistant,mechanic"
     assignmentpriority="88"
@@ -15,7 +15,7 @@
   <Order
     identifier="retrievewreckitems"
     category="Emergency"
-    color="220,70,70,255"
+    color="200,60,40,255"
     appropriatejobs="assistant,mechanic,securityofficer"
     preferredjobs="assistant,mechanic"
     assignmentpriority="88"
@@ -26,12 +26,20 @@
   </Order>
   <Order
     identifier="markretrievecontainer"
-    color="120,205,170,255"
+    color="255,180,0,255"
     mustsettarget="true"
     targetallcharacters="true"
     canbegeneralized="false"
     displaygiverintooltip="false"
     targetitemcomponent="ItemContainer">
-    <sprite texture="%ModDir%/Icons/PickupItemsIcon.png" sourcerect="0,0,64,64" origin="32,32" />
+    <sprite texture="%ModDir%/Icons/ToggleMarkContainer.png" sourcerect="0,0,64,64" origin="32,32" />
+  </Order>
+  <Order
+    identifier="markedcontainerhud"
+    color="255,120,0,255"
+    mustsettarget="false"
+    canbegeneralized="false"
+    displaygiverintooltip="false">
+    <sprite texture="%ModDir%/Icons/MarkedContainer.png" sourcerect="0,0,64,64" origin="32,32" />
   </Order>
 </Orders>
