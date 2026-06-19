@@ -41,4 +41,5 @@
   <retrievewreckitems.abort.nooxygen>I need a full oxygen tank before leaving the submarine.</retrievewreckitems.abort.nooxygen>
   <retrievewreckitems.abort.nogear>I need diving gear before leaving the submarine.</retrievewreckitems.abort.nogear>
   <retrievewreckitems.abort.noairlock>I can't find a usable airlock.</retrievewreckitems.abort.noairlock>
+  <retrievewreckitems.airlockcycle>Cycling airlock.</retrievewreckitems.airlockcycle>
 </infotexts>

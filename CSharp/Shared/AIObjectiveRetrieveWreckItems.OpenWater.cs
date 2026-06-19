@@ -85,6 +85,11 @@ namespace RetrieveItemsOrderMod
                 return false;
             }
 
+            if (TryMoveOutOfExitAirlock(deltaTime, targetDistance, targetWorldPosition))
+            {
+                return false;
+            }
+
             if (targetDistance <= closeEnough)
             {
                 character.OverrideMovement = null;
@@ -330,11 +335,10 @@ namespace RetrieveItemsOrderMod
                 return false;
             }
 
-            bool nearExitAirlock =
+            bool insideOrInHullBounds =
                 character.CurrentHull == exitAirlockHull ||
-                IsCharacterInsideHullBounds(exitAirlockHull) ||
-                Vector2.DistanceSquared(character.WorldPosition, GetGapCenter(exitAirlockGap)) < 900.0f * 900.0f;
-            if (!nearExitAirlock)
+                IsCharacterInsideHullBounds(exitAirlockHull);
+            if (!insideOrInHullBounds)
             {
                 return false;
             }
@@ -1256,6 +1260,11 @@ namespace RetrieveItemsOrderMod
                 return true;
             }
 
+            if (IsExitAirlockStructureHit(fixture, hitWorld))
+            {
+                return true;
+            }
+
             return passableGapRects.Any(rect => rect.Contains((int)hitWorld.X, (int)hitWorld.Y));
         }
 
@@ -1352,6 +1361,34 @@ namespace RetrieveItemsOrderMod
                 GetMemberValue(userData, "owner");
 
             return owner is Character;
+        }
+
+        private bool IsExitAirlockStructureHit(Fixture fixture, Vector2 hitWorld)
+        {
+            if (exitAirlockHull == null || exitAirlockGap == null)
+            {
+                return false;
+            }
+
+            float waterRatio = GetHullWaterRatio(exitAirlockHull);
+            Door exitDoor = exitAirlockGap.ConnectedDoor;
+            if (waterRatio < AirlockFloodThreshold || exitDoor == null || !exitDoor.IsOpen)
+            {
+                return false;
+            }
+
+            object fixtureUser = GetFixtureUserData(fixture);
+            object bodyUser = GetBodyUserData(fixture?.Body);
+            if (fixtureUser is not Structure && bodyUser is not Structure)
+            {
+                return false;
+            }
+
+            Vector2 gapCenter = GetGapCenter(exitAirlockGap);
+            Rectangle airlockRect = GetWorldRect(exitAirlockHull);
+            float airlockRadius = Math.Max(airlockRect.Width, airlockRect.Height) * 0.5f + 50.0f;
+            float distToAirlock = Vector2.DistanceSquared(hitWorld, gapCenter);
+            return distToAirlock <= airlockRadius * airlockRadius;
         }
 
         private void LogOpenWaterRaycastHit(Fixture fixture, Vector2 hitWorld, Vector2 startWorld, Vector2 endWorld, Vector2 normal, float fraction)
@@ -1472,8 +1509,13 @@ namespace RetrieveItemsOrderMod
             }
 
             int inflate = (int)Math.Max(OpenWaterNodeClearance, OpenWaterObstacleInflation);
-            rect.Inflate(inflate, inflate);
-            return rect;
+
+            Vector2 worldPos = gap.WorldPosition;
+            return new Rectangle(
+                (int)(worldPos.X - rect.Width * 0.5f) - inflate,
+                (int)(worldPos.Y - rect.Height * 0.5f) - inflate,
+                rect.Width + inflate * 2,
+                rect.Height + inflate * 2);
         }
 
         private Point WorldToOpenWaterNode(Vector2 worldPosition)
@@ -1518,12 +1560,28 @@ namespace RetrieveItemsOrderMod
 
         private static Rectangle GetWorldRect(object entity)
         {
+            if (entity is Hull hull)
+            {
+                Vector2 size = hull.Size;
+                if (size.X <= 0 || size.Y <= 0)
+                {
+                    return Rectangle.Empty;
+                }
+
+                Vector2 worldPos = hull.WorldPosition;
+                return new Rectangle(
+                    (int)(worldPos.X - size.X * 0.5f),
+                    (int)(worldPos.Y - size.Y * 0.5f),
+                    (int)size.X,
+                    (int)size.Y);
+            }
+
             object rectObject =
                 AccessTools.Property(entity.GetType(), "WorldRect")?.GetValue(entity) ??
                 AccessTools.Field(entity.GetType(), "WorldRect")?.GetValue(entity) ??
                 AccessTools.Field(entity.GetType(), "worldRect")?.GetValue(entity);
 
-            return rectObject is Rectangle rect ? rect : Rectangle.Empty;
+            return rectObject is Rectangle rect2 ? rect2 : Rectangle.Empty;
         }
 
         private bool ShouldUseOpenWaterFallback()
