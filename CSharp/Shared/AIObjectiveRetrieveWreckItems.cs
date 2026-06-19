@@ -70,6 +70,14 @@ namespace RetrieveItemsOrderMod
         private float openWaterMovementLogTimer;
         private float openWaterObstacleLogTimer;
         private float openWaterLastDistance = float.MaxValue;
+        private int openWaterLastObstacleCount = -1;
+        private List<Rectangle> openWaterCachedObstacles;
+        private int openWaterFailedRepathCount;
+        private int openWaterGiveUpCount;
+        private float airlockCycleTimer;
+        private bool airlockCycleClosingPhase;
+        private float airlockCycleCooldown;
+        private float airlockExitWaitTimer;
         private Vector2 lastWorldPosition;
         private int lastCarriedCount;
         private bool usingOpenWaterFallback;
@@ -349,6 +357,73 @@ namespace RetrieveItemsOrderMod
                     StartOpenWaterFallback();
                 }
 
+                if (stuckTimer >= StuckTimeout)
+                {
+                    float distToTarget = Vector2.Distance(character.WorldPosition, currentTargetItem?.WorldPosition ?? character.WorldPosition);
+                    bool tryDirect = (distToTarget <= OpenWaterDirectGoalThreshold || openWaterFailedRepathCount >= 2) &&
+                                     currentTargetItem != null && !currentTargetItem.Removed;
+                    if (tryDirect)
+                    {
+                        Vector2 directMovement = currentTargetItem.WorldPosition - character.WorldPosition;
+                        if (directMovement.LengthSquared() > 1.0f)
+                        {
+                            Vector2 normalized = Vector2.Normalize(directMovement);
+                            List<Rectangle> obstacles = GetOpenWaterObstacles();
+                            Vector2 bestDir = Vector2.Zero;
+                            float bestScore = float.MinValue;
+                            Vector2 perpA = new Vector2(-normalized.Y, normalized.X);
+                            Vector2 perpB = new Vector2(normalized.Y, -normalized.X);
+                            Vector2[] candidates = { normalized, perpA, perpB, -perpA, -perpB, -normalized };
+                            foreach (Vector2 dir in candidates)
+                            {
+                                if (OpenWaterSegmentBlocked(character.WorldPosition, character.WorldPosition + dir * 100.0f, obstacles))
+                                {
+                                    continue;
+                                }
+
+                                float score = Vector2.Dot(dir, normalized);
+                                if (score > bestScore)
+                                {
+                                    bestScore = score;
+                                    bestDir = dir;
+                                }
+                            }
+
+                            if (bestDir.LengthSquared() < 0.01f)
+                            {
+                                openWaterFailedRepathCount++;
+                                openWaterPath.Clear();
+                                openWaterPathIndex = 0;
+                                openWaterRepathTimer = 0.0f;
+                                ResetStuckTracking();
+                                LuaCsLogger.Log($"[RetrieveItemsOrder] All directions blocked for {character.Name}; releasing path (failedRepaths={openWaterFailedRepathCount})");
+                                return;
+                            }
+
+                            character.OverrideMovement = bestDir;
+                            try
+                            {
+                                SteeringManager?.SteeringManual(deltaTime, bestDir);
+                            }
+                            catch { }
+                            character.SetInput(InputType.Left, bestDir.X < -0.15f, false);
+                            character.SetInput(InputType.Right, bestDir.X > 0.15f, false);
+                            character.SetInput(InputType.Up, bestDir.Y > 0.15f, false);
+                            character.SetInput(InputType.Down, bestDir.Y < -0.15f, false);
+                            LuaCsLogger.Log($"[RetrieveItemsOrder] Open-water stuck for {character.Name}; wall-slide (failedRepaths={openWaterFailedRepathCount}), dir=({bestDir.X:0.00},{bestDir.Y:0.00}), distance={distToTarget:0}");
+                            return;
+                        }
+                    }
+
+                    openWaterFailedRepathCount++;
+                    openWaterPath.Clear();
+                    openWaterPathIndex = 0;
+                    openWaterRepathTimer = 0.0f;
+                    ResetStuckTracking();
+                    LuaCsLogger.Log($"[RetrieveItemsOrder] Open-water stuck for {character.Name}; forcing repath (failedRepaths={openWaterFailedRepathCount}), distance={distToTarget:0}");
+                    return;
+                }
+
                 if (UpdateOpenWaterNavigation(deltaTime, currentTargetItem, OpenWaterCloseEnough))
                 {
                     StopOpenWaterFallback();
@@ -423,6 +498,10 @@ namespace RetrieveItemsOrderMod
             exitAirlockHull = null;
             exitAirlockGap = null;
             exitAirlockDoorCommanded = false;
+            airlockCycleTimer = 0.0f;
+            airlockCycleClosingPhase = false;
+            airlockCycleCooldown = 0.0f;
+            airlockExitWaitTimer = 0.0f;
             travelPhase = WreckTravelPhase.ToAirlock;
             state = WreckRetrieveState.Traveling;
             statusTimer = 0.0f;
@@ -485,16 +564,6 @@ namespace RetrieveItemsOrderMod
 
         private void UpdateExitingAirlock(float deltaTime)
         {
-            if (ShouldUseOpenWaterFallback())
-            {
-                ReleaseOpenWaterMovementControl();
-                ClearSubObjective();
-                travelPhase = WreckTravelPhase.OpenWater;
-                ReleaseExitAirlockDoorCommand();
-                StartOpenWaterFallback();
-                return;
-            }
-
             if (exitAirlockHull == null || exitAirlockGap == null)
             {
                 travelPhase = WreckTravelPhase.ToAirlock;
@@ -516,9 +585,33 @@ namespace RetrieveItemsOrderMod
                 return;
             }
 
-            OpenExitAirlockDoor(exitAirlockGap);
-            Vector2 exitPoint = GetExternalExitPoint(exitAirlockHull, exitAirlockGap);
-            ApplyAirlockExitMovement(deltaTime, exitPoint);
+            Door exitDoor = exitAirlockGap.ConnectedDoor;
+            if (exitDoor != null && !exitDoor.IsOpen)
+            {
+                ToggleDoor(exitDoor, true);
+                airlockExitWaitTimer = 0.0f;
+            }
+
+            if (exitDoor != null && exitDoor.IsOpen)
+            {
+                airlockExitWaitTimer += deltaTime;
+                character.OverrideMovement = null;
+                ClearOpenWaterMovementInputs();
+
+                if (airlockExitWaitTimer > 2.0f)
+                {
+                    LuaCsLogger.Log($"[RetrieveItemsOrder] Exit airlock door open but {character.Name} still inside after {airlockExitWaitTimer:0.0}s; transitioning to open water");
+                    ClearSubObjective();
+                    travelPhase = WreckTravelPhase.OpenWater;
+                    ReleaseExitAirlockDoorCommand();
+                    StartOpenWaterFallback();
+                    return;
+                }
+
+                return;
+            }
+
+            ReleaseOpenWaterMovementControl();
         }
 
         private void ResolveExitAirlock()
@@ -640,14 +733,29 @@ namespace RetrieveItemsOrderMod
                 return;
             }
 
-            door.ShouldBeOpen = true;
-            door.IsOpen = true;
             door.BotsShouldKeepOpen = false;
+            ToggleDoor(door, true);
             if (!exitAirlockDoorCommanded)
             {
                 exitAirlockDoorCommanded = true;
                 LuaCsLogger.Log($"[RetrieveItemsOrder] Wreck retrieval opened exit airlock door for {character.Name}: gap={gap.Name ?? "<unnamed>"}");
             }
+        }
+
+        private void ToggleDoor(Door door, bool open)
+        {
+            if (door == null)
+            {
+                return;
+            }
+
+            bool isAlreadyCorrectState = open ? door.IsOpen : !door.IsOpen;
+            if (isAlreadyCorrectState)
+            {
+                return;
+            }
+
+            door.ToggleState(ActionType.OnUse, character);
         }
 
         private bool CloseInteriorAirlockDoors(Hull airlockHull, Gap exteriorGap)
@@ -667,10 +775,9 @@ namespace RetrieveItemsOrderMod
                 }
 
                 door.BotsShouldKeepOpen = false;
-                door.ShouldBeOpen = false;
                 if (door.IsOpen)
                 {
-                    door.IsOpen = false;
+                    ToggleDoor(door, false);
                     allClosed = false;
                 }
             }
@@ -684,7 +791,7 @@ namespace RetrieveItemsOrderMod
             if (door != null)
             {
                 door.BotsShouldKeepOpen = false;
-                door.ShouldBeOpen = false;
+                ToggleDoor(door, false);
             }
 
             exitAirlockDoorCommanded = false;
@@ -1451,7 +1558,7 @@ namespace RetrieveItemsOrderMod
                 return;
             }
 
-            if (currentSubObjective != null)
+            if (currentSubObjective != null || usingOpenWaterFallback)
             {
                 stuckTimer += deltaTime;
             }

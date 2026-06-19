@@ -16,9 +16,15 @@ namespace RetrieveItemsOrderMod
         private const float OpenWaterCloseEnough = 180.0f;
         private const float OpenWaterWaypointCloseEnough = 100.0f;
         private const float OpenWaterRepathInterval = 2.0f;
-        private const float OpenWaterObstacleInflation = 40.0f;
-        private const float OpenWaterNodeClearance = 40.0f;
+        private const float OpenWaterDirectGoalThreshold = 300.0f;
+        private const float OpenWaterObstacleInflation = 25.0f;
+        private const float OpenWaterNodeClearance = 25.0f;
+        private const float OpenWaterRaycastStartClearance = 14.0f;
+        private const float OpenWaterCharacterHalfWidth = 15.0f;
         private const int OpenWaterNearestNodeSearchRadius = 20;
+        private const float OpenWaterAirlockDrainTime = 10.0f;
+        private float openWaterScaledClearance = OpenWaterNodeClearance;
+        private List<Rectangle> openWaterScaledObstacles = null;
 
         private void StartOpenWaterFallback()
         {
@@ -33,6 +39,8 @@ namespace RetrieveItemsOrderMod
             openWaterProgressTimer = 0.0f;
             openWaterMovementLogTimer = 0.0f;
             openWaterLastDistance = float.MaxValue;
+            openWaterScaledObstacles = null;
+            openWaterGiveUpCount = 0;
             openWaterPath.Clear();
             openWaterPathIndex = 0;
             openWaterPathGoal = Vector2.Zero;
@@ -45,6 +53,13 @@ namespace RetrieveItemsOrderMod
             openWaterProgressTimer = 0.0f;
             openWaterMovementLogTimer = 0.0f;
             openWaterLastDistance = float.MaxValue;
+            openWaterLastObstacleCount = -1;
+            openWaterCachedObstacles = null;
+            openWaterScaledObstacles = null;
+            openWaterGiveUpCount = 0;
+            airlockCycleTimer = 0.0f;
+            airlockCycleClosingPhase = false;
+            airlockCycleCooldown = 0.0f;
             openWaterPath.Clear();
             openWaterPathIndex = 0;
             openWaterSteering = null;
@@ -65,6 +80,7 @@ namespace RetrieveItemsOrderMod
         {
             usingOpenWaterFallback = true;
             openWaterObstacleLogTimer -= deltaTime;
+            openWaterCachedObstacles = null;
 
             float targetDistance = Vector2.Distance(character.WorldPosition, targetWorldPosition);
             if (!IsInOpenWaterControlZone())
@@ -79,7 +95,44 @@ namespace RetrieveItemsOrderMod
                 return true;
             }
 
+            if (openWaterFailedRepathCount >= 3)
+            {
+                int failCount = openWaterFailedRepathCount;
+                openWaterFailedRepathCount = 0;
+                openWaterScaledClearance = OpenWaterNodeClearance;
+                openWaterScaledObstacles = null;
+                openWaterPath.Clear();
+                openWaterPathIndex = 0;
+                openWaterGiveUpCount++;
+                float cooldown = Math.Min(5.0f + openWaterGiveUpCount * 10.0f, 60.0f);
+                openWaterRepathTimer = cooldown;
+                if (TryMoveOutOfExitAirlock(deltaTime, targetDistance, targetWorldPosition))
+                {
+                    ResetStuckTracking();
+                    LuaCsLogger.Log($"[RetrieveItemsOrder] {character.Name} failed pathfinding {failCount} times; using airlock escape (giveUp={openWaterGiveUpCount})");
+                    return false;
+                }
+                Vector2 awayFromTarget = Vector2.Normalize(character.WorldPosition - targetWorldPosition);
+                if (awayFromTarget.LengthSquared() < 0.01f)
+                {
+                    awayFromTarget = new Vector2(0, 1);
+                }
+                character.OverrideMovement = awayFromTarget;
+                ClearOpenWaterMovementInputs();
+                ResetStuckTracking();
+                LuaCsLogger.Log($"[RetrieveItemsOrder] {character.Name} failed pathfinding {failCount} times; pushing away from target (giveUp={openWaterGiveUpCount}, cooldown={cooldown:0}s, away=({awayFromTarget.X:0.00},{awayFromTarget.Y:0.00}))");
+                return false;
+            }
+
             openWaterRepathTimer -= deltaTime;
+            List<Rectangle> currentObstacles = GetOpenWaterObstacles();
+            bool obstaclesChanged = openWaterLastObstacleCount >= 0 && currentObstacles.Count != openWaterLastObstacleCount;
+            openWaterLastObstacleCount = currentObstacles.Count;
+            if (obstaclesChanged && openWaterRepathTimer < 2.0f)
+            {
+                openWaterRepathTimer = 2.0f;
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Obstacles changed for {character.Name}; delaying repath 2s to let physics settle");
+            }
             bool shouldRepath =
                 openWaterRepathTimer <= 0.0f ||
                 (openWaterPath.Count > 0 && openWaterPathIndex >= openWaterPath.Count) ||
@@ -90,10 +143,10 @@ namespace RetrieveItemsOrderMod
                 openWaterPathIndex = 0;
                 openWaterPathGoal = targetWorldPosition;
                 openWaterRepathTimer = OpenWaterRepathInterval;
-                List<Rectangle> debugObstacles = GetOpenWaterObstacles();
-                LuaCsLogger.Log($"[RetrieveItemsOrder] Open-water path for {character.Name}: target={targetLabel}, nodes={openWaterPath.Count}, distance={targetDistance:0}, obstacles={debugObstacles.Count}, directBlocked={OpenWaterSegmentBlocked(character.WorldPosition, targetWorldPosition, debugObstacles)}, steering=world-override");
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Open-water path for {character.Name}: target={targetLabel}, nodes={openWaterPath.Count}, distance={targetDistance:0}, obstacles={currentObstacles.Count}, obstaclesChanged={obstaclesChanged}, directBlocked={OpenWaterSegmentBlocked(character.WorldPosition, targetWorldPosition, currentObstacles)}, steering=world-override");
                 if (openWaterPath.Count == 0)
                 {
+                    openWaterFailedRepathCount++;
                     if (TryMoveOutOfExitAirlock(deltaTime, targetDistance, targetWorldPosition))
                     {
                         return false;
@@ -126,7 +179,7 @@ namespace RetrieveItemsOrderMod
 
                 if (openWaterPathIndex + 1 < openWaterPath.Count)
                 {
-                    List<Rectangle> obstacles = GetOpenWaterObstacles();
+                    List<Rectangle> obstacles = openWaterScaledObstacles ?? GetOpenWaterObstacles();
                     Vector2 followingPoint = openWaterPath[openWaterPathIndex + 1];
                     if (OpenWaterSegmentBlocked(character.WorldPosition, followingPoint, obstacles))
                     {
@@ -135,6 +188,8 @@ namespace RetrieveItemsOrderMod
                 }
 
                 openWaterPathIndex++;
+                openWaterFailedRepathCount = 0;
+                openWaterGiveUpCount = 0;
             }
 
             if (openWaterPathIndex >= openWaterPath.Count)
@@ -143,11 +198,26 @@ namespace RetrieveItemsOrderMod
             }
 
             float currentTargetDistanceSquared = Vector2.DistanceSquared(character.WorldPosition, targetWorldPosition);
+            List<Rectangle> skipObstacles = openWaterScaledObstacles ?? GetOpenWaterObstacles();
             while (openWaterPathIndex < openWaterPath.Count &&
                    Vector2.DistanceSquared(nextPoint, targetWorldPosition) > currentTargetDistanceSquared + (OpenWaterGridSize * OpenWaterGridSize))
             {
+                int candidateIndex = openWaterPathIndex + 1;
+                if (candidateIndex >= openWaterPath.Count)
+                {
+                    break;
+                }
+
+                Vector2 candidatePoint = openWaterPath[candidateIndex];
+                if (OpenWaterSegmentBlocked(character.WorldPosition, candidatePoint, skipObstacles))
+                {
+                    break;
+                }
+
                 openWaterPathIndex++;
-                nextPoint = openWaterPathIndex < openWaterPath.Count ? openWaterPath[openWaterPathIndex] : targetWorldPosition;
+                nextPoint = candidatePoint;
+                openWaterFailedRepathCount = 0;
+                openWaterGiveUpCount = 0;
             }
 
             if (Vector2.DistanceSquared(nextPoint, targetWorldPosition) > currentTargetDistanceSquared + (OpenWaterGridSize * OpenWaterGridSize))
@@ -157,6 +227,92 @@ namespace RetrieveItemsOrderMod
 
             float waypointDistance = Vector2.Distance(character.WorldPosition, nextPoint);
             UpdateOpenWaterProgress(deltaTime, waypointDistance, targetDistance);
+
+            if (openWaterPathIndex == 0 && openWaterPath.Count > 1)
+            {
+                List<Rectangle> firstSegObstacles = openWaterScaledObstacles ?? GetOpenWaterObstacles();
+                Vector2 secondWaypoint = openWaterPath[1];
+                if (OpenWaterSegmentBlocked(character.WorldPosition, secondWaypoint, firstSegObstacles))
+                {
+                    Vector2 toSecond = Vector2.Normalize(secondWaypoint - character.WorldPosition);
+                    Vector2 perpA = new Vector2(-toSecond.Y, toSecond.X);
+                    Vector2 perpB = new Vector2(toSecond.Y, -toSecond.X);
+                    Vector2 reversed = -toSecond;
+                    Vector2 up = new Vector2(0, 1);
+                    Vector2 down = new Vector2(0, -1);
+                    Vector2 right = new Vector2(1, 0);
+                    Vector2 left = new Vector2(-1, 0);
+                    Vector2 diagNE = Vector2.Normalize(new Vector2(1, 1));
+                    Vector2 diagNW = Vector2.Normalize(new Vector2(-1, 1));
+                    Vector2 diagSE = Vector2.Normalize(new Vector2(1, -1));
+                    Vector2 diagSW = Vector2.Normalize(new Vector2(-1, -1));
+                    Vector2[] candidates = { toSecond, perpA, perpB, -perpA, -perpB, reversed, up, down, right, left, diagNE, diagNW, diagSE, diagSW };
+                    Vector2 slideDir = Vector2.Zero;
+                    float bestScore = float.MinValue;
+                    Vector2 desperationDir = Vector2.Zero;
+                    float desperationScore = float.MinValue;
+                    float[] testDistances = { 5.0f, 10.0f, 15.0f, 30.0f, 50.0f, 80.0f };
+                    List<Rectangle> gapRects = GetOpenWaterPassableGapRects();
+                    foreach (float testDist in testDistances)
+                    {
+                        Vector2 bestAtDist = Vector2.Zero;
+                        float bestScoreAtDist = float.MinValue;
+                        foreach (Vector2 dir in candidates)
+                        {
+                            Vector2 endPoint = character.WorldPosition + dir * testDist;
+                            int ex = (int)endPoint.X;
+                            int ey = (int)endPoint.Y;
+                            bool endpointBlocked = firstSegObstacles.Any(r => r.Contains(ex, ey)) && !gapRects.Any(r => r.Contains(ex, ey));
+
+                            float score = Vector2.Dot(dir, toSecond);
+                            if (!endpointBlocked && score > bestScoreAtDist)
+                            {
+                                bestScoreAtDist = score;
+                                bestAtDist = dir;
+                            }
+
+                            if (score > desperationScore)
+                            {
+                                desperationScore = score;
+                                desperationDir = dir;
+                            }
+                        }
+
+                        if (bestAtDist.LengthSquared() > 0.01f)
+                        {
+                            slideDir = bestAtDist;
+                            break;
+                        }
+                    }
+
+                    if (slideDir.LengthSquared() < 0.01f)
+                    {
+                        openWaterPath.Clear();
+                        openWaterPathIndex = 0;
+                        openWaterRepathTimer = 3.0f;
+                        if (TryMoveOutOfExitAirlock(deltaTime, targetDistance, targetWorldPosition))
+                        {
+                            LuaCsLogger.Log($"[RetrieveItemsOrder] All directions blocked for {character.Name}; using airlock escape");
+                            return false;
+                        }
+                        Vector2 pushDir = desperationDir.LengthSquared() > 0.01f
+                            ? desperationDir
+                            : Vector2.Normalize(character.WorldPosition - targetWorldPosition);
+                        if (pushDir.LengthSquared() < 0.01f)
+                        {
+                            pushDir = new Vector2(0, 1);
+                        }
+                        character.OverrideMovement = pushDir;
+                        ClearOpenWaterMovementInputs();
+                        ResetStuckTracking();
+                        LuaCsLogger.Log($"[RetrieveItemsOrder] All directions blocked for {character.Name}; pushing toward waypoint for 3s (push=({pushDir.X:0.00},{pushDir.Y:0.00}))");
+                        return false;
+                    }
+
+                    ApplyOpenWaterSteering(deltaTime, slideDir * 100.0f, targetDistance, nextPoint, targetWorldPosition);
+                    return false;
+                }
+            }
 
             Vector2 movement = GetOpenWaterMovementVector(nextPoint);
             if (movement.LengthSquared() < 1.0f)
@@ -178,6 +334,12 @@ namespace RetrieveItemsOrderMod
                 return false;
             }
 
+            if (airlockCycleCooldown > 0.0f)
+            {
+                airlockCycleCooldown -= deltaTime;
+                return false;
+            }
+
             bool nearExitAirlock =
                 character.CurrentHull == exitAirlockHull ||
                 IsCharacterInsideHullBounds(exitAirlockHull) ||
@@ -187,16 +349,70 @@ namespace RetrieveItemsOrderMod
                 return false;
             }
 
-            OpenExitAirlockDoor(exitAirlockGap);
-            Vector2 exitPoint = GetExternalExitPoint(exitAirlockHull, exitAirlockGap);
-            Vector2 movement = exitPoint - character.WorldPosition;
-            if (movement.LengthSquared() <= 1.0f)
+            Door exitDoor = exitAirlockGap.ConnectedDoor;
+            if (exitDoor == null)
             {
                 return false;
             }
 
-            ApplyOpenWaterSteering(deltaTime, movement, targetDistance, exitPoint, targetWorldPosition);
-            return true;
+            if (!airlockCycleClosingPhase && !exitDoor.IsOpen)
+            {
+                OpenExitAirlockDoor(exitAirlockGap);
+                Vector2 exitPoint = GetExternalExitPoint(exitAirlockHull, exitAirlockGap);
+                Vector2 movement = exitPoint - character.WorldPosition;
+                if (movement.LengthSquared() <= 1.0f)
+                {
+                    return false;
+                }
+                ApplyOpenWaterSteering(deltaTime, movement, targetDistance, exitPoint, targetWorldPosition);
+                return true;
+            }
+
+            if (!airlockCycleClosingPhase && exitDoor.IsOpen)
+            {
+                airlockCycleClosingPhase = true;
+                airlockCycleTimer = 0.0f;
+                CloseInteriorAirlockDoors(exitAirlockHull, exitAirlockGap);
+                ToggleDoor(exitDoor, false);
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Airlock cycle: closing exit door for {character.Name} (door.IsOpen={exitDoor.IsOpen}, openState={exitDoor.OpenState:0.00})");
+                return true;
+            }
+
+            if (airlockCycleClosingPhase)
+            {
+                if (exitDoor.IsOpen)
+                {
+                    ToggleDoor(exitDoor, false);
+                }
+
+                airlockCycleTimer += deltaTime;
+                if (airlockCycleTimer % 1.0f < deltaTime)
+                {
+                    LuaCsLogger.Log($"[RetrieveItemsOrder] Airlock cycle drain wait for {character.Name}: timer={airlockCycleTimer:0.0}/{OpenWaterAirlockDrainTime:0.0}s, doorIsOpen={exitDoor.IsOpen}, openState={exitDoor.OpenState:0.00}");
+                }
+                if (airlockCycleTimer < OpenWaterAirlockDrainTime)
+                {
+                    character.OverrideMovement = null;
+                    ClearOpenWaterMovementInputs();
+                    return true;
+                }
+
+                airlockCycleClosingPhase = false;
+                airlockCycleTimer = 0.0f;
+                airlockCycleCooldown = 5.0f;
+                OpenExitAirlockDoor(exitAirlockGap);
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Airlock cycle: reopening exit door for {character.Name}; water should rush in and push character");
+                Vector2 exitPoint = GetExternalExitPoint(exitAirlockHull, exitAirlockGap);
+                Vector2 movement = exitPoint - character.WorldPosition;
+                if (movement.LengthSquared() <= 1.0f)
+                {
+                    return false;
+                }
+                ApplyOpenWaterSteering(deltaTime, movement, targetDistance, exitPoint, targetWorldPosition);
+                return true;
+            }
+
+            return false;
         }
 
         private Vector2 GetOpenWaterMovementVector(Vector2 nextWorldPoint)
@@ -269,9 +485,7 @@ namespace RetrieveItemsOrderMod
                 return true;
             }
 
-            if (travelPhase == WreckTravelPhase.OpenWater &&
-                currentHull == exitAirlockHull &&
-                character.InWater)
+            if (travelPhase == WreckTravelPhase.OpenWater && character.InWater)
             {
                 return true;
             }
@@ -362,22 +576,105 @@ namespace RetrieveItemsOrderMod
 
         private List<Vector2> BuildOpenWaterPath(Vector2 start, Vector2 goal)
         {
-            List<Rectangle> obstacles = GetOpenWaterObstacles();
-            if (!OpenWaterSegmentBlocked(start, goal, obstacles))
+            List<Rectangle> nearbyObstacles = GetNearbyObstacles(start, goal, OpenWaterObstacleInflation);
+            if (!OpenWaterSegmentBlocked(start, goal, nearbyObstacles))
             {
                 return new List<Vector2> { start, goal };
             }
 
             Vector2 startAnchor = GetOpenWaterStartAnchor(start);
             Rectangle bounds = GetOpenWaterSearchBounds(startAnchor, goal);
-            Point preferredStartNode = WorldToOpenWaterNode(startAnchor);
-            Point preferredGoalNode = WorldToOpenWaterNode(goal);
-            Point? resolvedStartNode = FindNearestOpenWaterNode(preferredStartNode, startAnchor, obstacles, bounds);
-            Point? resolvedGoalNode = FindNearestOpenWaterNode(preferredGoalNode, goal, obstacles, bounds);
+            int minDim = Math.Min(bounds.Width, bounds.Height);
+            float clearanceScale = minDim <= 6 ? 0.30f :
+                                   minDim <= 12 ? 0.45f :
+                                   minDim <= 25 ? 0.60f :
+                                   minDim <= 40 ? 0.80f :
+                                   1.0f;
+            openWaterScaledClearance = OpenWaterNodeClearance * clearanceScale;
+            float scaledInflation = OpenWaterObstacleInflation * clearanceScale;
+            List<Rectangle> tightObstacles = clearanceScale < 1.0f
+                ? GetNearbyObstacles(start, goal, scaledInflation)
+                : nearbyObstacles;
+            LuaCsLogger.Log($"[RetrieveItemsOrder] Scaled clearance for {character.Name}: bounds=({bounds.Width},{bounds.Height}), minDim={minDim}, clearance={openWaterScaledClearance:0}, inflation={scaledInflation:0}, nearbyObstacles={nearbyObstacles.Count}/{GetOpenWaterObstacles().Count}");
+            for (int i = 0; i < tightObstacles.Count; i++)
+            {
+                Rectangle r = tightObstacles[i];
+                LuaCsLogger.Log($"[RetrieveItemsOrder]   nearby[{i}]: pos=({r.X},{r.Y}), size=({r.Width},{r.Height}), center=({r.X + r.Width / 2},{r.Y + r.Height / 2})");
+            }
+
+            openWaterScaledObstacles = tightObstacles;
+            List<Vector2> primaryResult = TryBuildPathWithGrid(start, goal, startAnchor, bounds, tightObstacles, OpenWaterGridSize);
+            if (primaryResult != null)
+            {
+                return PrependStartPosition(primaryResult, start);
+            }
+
+            float distance = Vector2.Distance(start, goal);
+            if (distance < OpenWaterGridSize * 8.0f)
+            {
+                float fineGrid = OpenWaterGridSize * 0.5f;
+                Rectangle fineBounds = GetOpenWaterSearchBounds(startAnchor, goal, fineGrid);
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Retrying path with fine grid ({fineGrid:0}) for {character.Name}");
+                List<Vector2> fineResult = TryBuildPathWithGrid(start, goal, startAnchor, fineBounds, tightObstacles, fineGrid);
+                if (fineResult != null)
+                {
+                    return PrependStartPosition(fineResult, start);
+                }
+            }
+
+            LuaCsLogger.Log($"[RetrieveItemsOrder] Open-water path exhausted for {character.Name}: bounds=({bounds.X},{bounds.Y},{bounds.Width},{bounds.Height})");
+            Point fallbackStartNode = WorldToOpenWaterNode(startAnchor);
+            List<Vector2> fallbackResult = GetFallbackOpenWaterPath(start, goal, tightObstacles, fallbackStartNode, bounds);
+            if (fallbackResult.Count > 0)
+            {
+                return fallbackResult;
+            }
+
+            float savedClearance = openWaterScaledClearance;
+            openWaterScaledClearance = 0.0f;
+            float reducedInflation = Math.Max(scaledInflation * 0.4f, 5.0f);
+            List<Rectangle> reducedObstacles = GetNearbyObstacles(start, goal, reducedInflation);
+            LuaCsLogger.Log($"[RetrieveItemsOrder] Trying zero-clearance fallback for {character.Name}: reducedInflation={reducedInflation:0}, reducedObstacles={reducedObstacles.Count}");
+            List<Vector2> zeroClearanceResult = TryBuildPathWithGrid(start, goal, startAnchor, bounds, reducedObstacles, OpenWaterGridSize);
+            if (zeroClearanceResult != null)
+            {
+                openWaterScaledObstacles = reducedObstacles;
+                return PrependStartPosition(zeroClearanceResult, start);
+            }
+
+            float fineReducedGrid = OpenWaterGridSize * 0.5f;
+            Rectangle fineReducedBounds = GetOpenWaterSearchBounds(startAnchor, goal, fineReducedGrid);
+            LuaCsLogger.Log($"[RetrieveItemsOrder] Trying zero-clearance fine grid ({fineReducedGrid:0}) for {character.Name}");
+            List<Vector2> zeroClearanceFineResult = TryBuildPathWithGrid(start, goal, startAnchor, fineReducedBounds, reducedObstacles, fineReducedGrid);
+            if (zeroClearanceFineResult != null)
+            {
+                openWaterScaledObstacles = reducedObstacles;
+                return PrependStartPosition(zeroClearanceFineResult, start);
+            }
+
+            openWaterScaledClearance = savedClearance;
+            return new List<Vector2>();
+        }
+
+        private List<Vector2> PrependStartPosition(List<Vector2> path, Vector2 startPosition)
+        {
+            if (path.Count > 0 && Vector2.DistanceSquared(path[0], startPosition) > 25.0f * 25.0f)
+            {
+                path.Insert(0, startPosition);
+            }
+
+            return path;
+        }
+
+        private List<Vector2> TryBuildPathWithGrid(Vector2 start, Vector2 goal, Vector2 startAnchor, Rectangle bounds, List<Rectangle> obstacles, float gridSize)
+        {
+            Point preferredStartNode = WorldToOpenWaterNode(startAnchor, gridSize);
+            Point preferredGoalNode = WorldToOpenWaterNode(goal, gridSize);
+            Point? resolvedStartNode = FindNearestOpenWaterNode(preferredStartNode, startAnchor, obstacles, bounds, gridSize);
+            Point? resolvedGoalNode = FindNearestOpenWaterNode(preferredGoalNode, goal, obstacles, bounds, gridSize);
             if (resolvedStartNode == null || resolvedGoalNode == null)
             {
-                LuaCsLogger.Log($"[RetrieveItemsOrder] Open-water path failed for {character.Name}: resolvedStart={resolvedStartNode.HasValue}, resolvedGoal={resolvedGoalNode.HasValue}, startAnchor=({startAnchor.X:0},{startAnchor.Y:0})");
-                return GetFallbackOpenWaterPath(start, goal, obstacles);
+                return null;
             }
 
             Point startNode = resolvedStartNode.Value;
@@ -385,36 +682,35 @@ namespace RetrieveItemsOrderMod
             if (startNode == goalNode)
             {
                 return OpenWaterSegmentBlocked(start, goal, obstacles)
-                    ? GetFallbackOpenWaterPath(start, goal, obstacles)
+                    ? null
                     : new List<Vector2> { start, goal };
             }
 
             Dictionary<Point, Point> cameFrom = new Dictionary<Point, Point>();
             Dictionary<Point, float> costSoFar = new Dictionary<Point, float>();
-            List<Point> open = new List<Point> { startNode };
+            OpenWaterMinHeap open = new OpenWaterMinHeap(256);
             HashSet<Point> closed = new HashSet<Point>();
             costSoFar[startNode] = 0.0f;
+            open.Enqueue(startNode, OpenWaterHeuristic(startNode, goalNode));
 
             while (open.Count > 0)
             {
-                Point current = open
-                    .OrderBy(point => costSoFar[point] + OpenWaterHeuristic(point, goalNode))
-                    .First();
-                open.Remove(current);
+                Point current = open.Dequeue();
 
                 if (current == goalNode)
                 {
-                    return ReconstructOpenWaterPath(cameFrom, current);
+                    List<Vector2> rawPath = ReconstructOpenWaterPath(cameFrom, current, gridSize);
+                    return SmoothOpenWaterPath(rawPath, obstacles);
                 }
 
                 closed.Add(current);
                 foreach (Point next in GetOpenWaterNeighbors(current))
                 {
-                    Vector2 currentWorld = OpenWaterNodeToWorld(current);
-                    Vector2 nextWorld = OpenWaterNodeToWorld(next);
+                    Vector2 currentWorld = OpenWaterNodeToWorld(current, gridSize);
+                    Vector2 nextWorld = OpenWaterNodeToWorld(next, gridSize);
                     if (closed.Contains(next) ||
                         !bounds.Contains(next.X, next.Y) ||
-                        OpenWaterNodeBlocked(next, obstacles) ||
+                        OpenWaterNodeBlocked(next, obstacles, gridSize) ||
                         OpenWaterSegmentBlocked(currentWorld, nextWorld, obstacles))
                     {
                         continue;
@@ -425,16 +721,21 @@ namespace RetrieveItemsOrderMod
                     {
                         costSoFar[next] = newCost;
                         cameFrom[next] = current;
-                        if (!open.Contains(next))
+                        float priority = newCost + OpenWaterHeuristic(next, goalNode);
+                        if (open.Contains(next))
                         {
-                            open.Add(next);
+                            open.UpdatePriority(next, priority);
+                        }
+                        else
+                        {
+                            open.Enqueue(next, priority);
                         }
                     }
                 }
             }
 
-            LuaCsLogger.Log($"[RetrieveItemsOrder] Open-water path exhausted for {character.Name}: explored={closed.Count}, bounds=({bounds.X},{bounds.Y},{bounds.Width},{bounds.Height}), startNode=({startNode.X},{startNode.Y}), goalNode=({goalNode.X},{goalNode.Y})");
-            return GetFallbackOpenWaterPath(start, goal, obstacles);
+            LuaCsLogger.Log($"[RetrieveItemsOrder] A* exhausted (grid={gridSize:0}) for {character.Name}: explored={closed.Count}");
+            return null;
         }
 
         private Vector2 GetOpenWaterStartAnchor(Vector2 start)
@@ -460,6 +761,17 @@ namespace RetrieveItemsOrderMod
 
         private List<Rectangle> GetOpenWaterObstacles()
         {
+            if (openWaterCachedObstacles != null)
+            {
+                return openWaterCachedObstacles;
+            }
+
+            openWaterCachedObstacles = GetOpenWaterObstaclesWithInflation(OpenWaterObstacleInflation);
+            return openWaterCachedObstacles;
+        }
+
+        private List<Rectangle> GetOpenWaterObstaclesWithInflation(float inflation)
+        {
             Hull currentHull = character.CurrentHull;
             Hull targetHull = currentTargetItem?.CurrentHull;
             bool characterInsideCurrentHull = IsCharacterInsideHullBounds(currentHull);
@@ -470,33 +782,204 @@ namespace RetrieveItemsOrderMod
                     (travelPhase != WreckTravelPhase.OpenWater || hull != exitAirlockHull) &&
                     (hull != currentHull || !characterInsideCurrentHull) &&
                     (hull != targetHull || !targetInsideTargetHull))
-                .Select(GetInflatedHullWorldRect)
+                .Select(h => GetInflatedHullWorldRect(h, inflation))
                 .Where(rect => rect.Width > 0 && rect.Height > 0)
                 .ToList();
         }
 
-        private List<Vector2> GetFallbackOpenWaterPath(Vector2 start, Vector2 goal, List<Rectangle> obstacles)
+        private List<Rectangle> GetNearbyObstacles(Vector2 start, Vector2 goal, float inflation)
+        {
+            float dist = Vector2.Distance(start, goal);
+            float radius = Math.Max(dist * 1.5f, 400.0f) + inflation;
+            float radiusSq = radius * radius;
+            Vector2 center = (start + goal) * 0.5f;
+            Hull currentHull = character.CurrentHull;
+            Hull targetHull = currentTargetItem?.CurrentHull;
+            bool characterInsideCurrentHull = IsCharacterInsideHullBounds(currentHull);
+            bool targetInsideTargetHull = IsWorldPointInsideHullBounds(targetHull, currentTargetItem?.WorldPosition ?? Vector2.Zero);
+            List<Rectangle> nearby = Hull.HullList
+                .Where(hull =>
+                    hull != null &&
+                    (travelPhase != WreckTravelPhase.OpenWater || hull != exitAirlockHull) &&
+                    (hull != currentHull || !characterInsideCurrentHull) &&
+                    (hull != targetHull || !targetInsideTargetHull))
+                .Where(hull =>
+                {
+                    Rectangle rect = GetWorldRect(hull);
+                    float cx = rect.X + rect.Width * 0.5f;
+                    float cy = rect.Y + rect.Height * 0.5f;
+                    float dx = cx - center.X;
+                    float dy = cy - center.Y;
+                    return dx * dx + dy * dy <= radiusSq;
+                })
+                .Select(h => GetInflatedHullWorldRect(h, inflation))
+                .Where(rect => rect.Width > 0 && rect.Height > 0)
+                .ToList();
+            return nearby;
+        }
+
+        private List<Vector2> GetSimpleFallbackPath(Vector2 start, Vector2 goal, List<Rectangle> obstacles)
         {
             return OpenWaterSegmentBlocked(start, goal, obstacles)
                 ? new List<Vector2>()
                 : new List<Vector2> { start, goal };
         }
 
+        private List<Vector2> GetFallbackOpenWaterPath(Vector2 start, Vector2 goal, List<Rectangle> obstacles, Point failedStartNode, Rectangle failedBounds)
+        {
+            if (!OpenWaterSegmentBlocked(start, goal, obstacles))
+            {
+                return new List<Vector2> { start, goal };
+            }
+
+            Rectangle expandedBounds = new Rectangle(
+                failedBounds.X - failedBounds.Width / 2,
+                failedBounds.Y - failedBounds.Height / 2,
+                failedBounds.Width * 2,
+                failedBounds.Height * 2);
+            Point? expandedStart = FindNearestOpenWaterNode(failedStartNode, start, obstacles, expandedBounds);
+            Point? expandedGoal = FindNearestOpenWaterNode(WorldToOpenWaterNode(goal), goal, obstacles, expandedBounds);
+            if (expandedStart != null && expandedGoal != null && expandedStart.Value != expandedGoal.Value)
+            {
+                List<Vector2> expandedPath = TryAStarPath(expandedStart.Value, expandedGoal.Value, obstacles, expandedBounds);
+                if (expandedPath.Count > 0)
+                {
+                    LuaCsLogger.Log($"[RetrieveItemsOrder] Open-water expanded fallback path found for {character.Name}: nodes={expandedPath.Count}");
+                    return PrependStartPosition(expandedPath, start);
+                }
+            }
+
+            Point nearestToStart = WorldToOpenWaterNode(start);
+            List<Rectangle> gapRects = GetOpenWaterPassableGapRects();
+            Vector2 bestCandidate = Vector2.Zero;
+            float bestCandidateScore = float.MinValue;
+            for (int radius = 1; radius <= 20; radius++)
+            {
+                for (int x = -radius; x <= radius; x++)
+                {
+                    for (int y = -radius; y <= radius; y++)
+                    {
+                        if (Math.Abs(x) != radius && Math.Abs(y) != radius)
+                        {
+                            continue;
+                        }
+
+                        Point candidate = new Point(nearestToStart.X + x, nearestToStart.Y + y);
+                        Vector2 candidateWorld = OpenWaterNodeToWorld(candidate);
+                        if (OpenWaterRectangleObstacleBlocked(candidateWorld, obstacles, gapRects) ||
+                            OpenWaterPhysicsPointBlocked(candidateWorld))
+                        {
+                            continue;
+                        }
+
+                        if (!OpenWaterSegmentBlocked(start, candidateWorld, obstacles))
+                        {
+                            Vector2 toGoal = Vector2.Normalize(goal - start);
+                            Vector2 offset = candidateWorld - start;
+                            float alongDir = Vector2.Dot(offset, toGoal);
+                            float distSq = offset.LengthSquared();
+                            float score = alongDir - distSq * 0.00001f;
+                            if (score > bestCandidateScore)
+                            {
+                                bestCandidateScore = score;
+                                bestCandidate = candidateWorld;
+                            }
+                        }
+                    }
+                }
+
+                if (bestCandidate.LengthSquared() > 0.01f && radius >= 5)
+                {
+                    break;
+                }
+            }
+
+            if (bestCandidate.LengthSquared() > 0.01f)
+            {
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Open-water nearest-node fallback for {character.Name}: toward=({bestCandidate.X:0},{bestCandidate.Y:0})");
+                return new List<Vector2> { start, bestCandidate, goal };
+            }
+
+            LuaCsLogger.Log($"[RetrieveItemsOrder] Open-water fallback failed for {character.Name}; returning empty path");
+            return new List<Vector2>();
+        }
+
+        private List<Vector2> TryAStarPath(Point startNode, Point goalNode, List<Rectangle> obstacles, Rectangle bounds)
+        {
+            Dictionary<Point, Point> cameFrom = new Dictionary<Point, Point>();
+            Dictionary<Point, float> costSoFar = new Dictionary<Point, float>();
+            OpenWaterMinHeap open = new OpenWaterMinHeap(128);
+            HashSet<Point> closed = new HashSet<Point>();
+            costSoFar[startNode] = 0.0f;
+            open.Enqueue(startNode, OpenWaterHeuristic(startNode, goalNode));
+
+            while (open.Count > 0)
+            {
+                Point current = open.Dequeue();
+                if (current == goalNode)
+                {
+                    return SmoothOpenWaterPath(ReconstructOpenWaterPath(cameFrom, current), obstacles);
+                }
+
+                closed.Add(current);
+                foreach (Point next in GetOpenWaterNeighbors(current))
+                {
+                    Vector2 currentWorld = OpenWaterNodeToWorld(current);
+                    Vector2 nextWorld = OpenWaterNodeToWorld(next);
+                    if (closed.Contains(next) ||
+                        !bounds.Contains(next.X, next.Y) ||
+                        OpenWaterNodeBlocked(next, obstacles) ||
+                        OpenWaterSegmentBlocked(currentWorld, nextWorld, obstacles))
+                    {
+                        continue;
+                    }
+
+                    float newCost = costSoFar[current] + OpenWaterStepCost(current, next);
+                    if (!costSoFar.TryGetValue(next, out float existingCost) || newCost < existingCost)
+                    {
+                        costSoFar[next] = newCost;
+                        cameFrom[next] = current;
+                        float priority = newCost + OpenWaterHeuristic(next, goalNode);
+                        if (open.Contains(next))
+                        {
+                            open.UpdatePriority(next, priority);
+                        }
+                        else
+                        {
+                            open.Enqueue(next, priority);
+                        }
+                    }
+                }
+            }
+
+            return new List<Vector2>();
+        }
+
         private Rectangle GetOpenWaterSearchBounds(Vector2 start, Vector2 goal)
         {
-            int margin = (int)Math.Max(OpenWaterGridSize * 12.0f, Vector2.Distance(start, goal) * 1.25f);
+            return GetOpenWaterSearchBounds(start, goal, OpenWaterGridSize);
+        }
+
+        private Rectangle GetOpenWaterSearchBounds(Vector2 start, Vector2 goal, float gridSize)
+        {
+            int margin = (int)Math.Max(gridSize * 12.0f, Vector2.Distance(start, goal) * 1.25f);
             int minX = (int)Math.Floor(Math.Min(start.X, goal.X) - margin);
             int minY = (int)Math.Floor(Math.Min(start.Y, goal.Y) - margin);
             int maxX = (int)Math.Ceiling(Math.Max(start.X, goal.X) + margin);
             int maxY = (int)Math.Ceiling(Math.Max(start.Y, goal.Y) + margin);
-            Point min = WorldToOpenWaterNode(new Vector2(minX, minY));
-            Point max = WorldToOpenWaterNode(new Vector2(maxX, maxY));
+            Point min = WorldToOpenWaterNode(new Vector2(minX, minY), gridSize);
+            Point max = WorldToOpenWaterNode(new Vector2(maxX, maxY), gridSize);
             return new Rectangle(min.X, min.Y, Math.Max(max.X - min.X, 1), Math.Max(max.Y - min.Y, 1));
         }
 
         private Point? FindNearestOpenWaterNode(Point preferredNode, Vector2 preferredWorldPosition, List<Rectangle> obstacles, Rectangle bounds)
         {
-            if (bounds.Contains(preferredNode.X, preferredNode.Y) && !OpenWaterNodeBlocked(preferredNode, obstacles))
+            return FindNearestOpenWaterNode(preferredNode, preferredWorldPosition, obstacles, bounds, OpenWaterGridSize);
+        }
+
+        private Point? FindNearestOpenWaterNode(Point preferredNode, Vector2 preferredWorldPosition, List<Rectangle> obstacles, Rectangle bounds, float gridSize)
+        {
+            if (bounds.Contains(preferredNode.X, preferredNode.Y) && !OpenWaterNodeBlocked(preferredNode, obstacles, gridSize))
             {
                 return preferredNode;
             }
@@ -515,9 +998,9 @@ namespace RetrieveItemsOrderMod
                         }
 
                         Point candidate = new Point(preferredNode.X + x, preferredNode.Y + y);
-                        Vector2 candidateWorld = OpenWaterNodeToWorld(candidate);
+                        Vector2 candidateWorld = OpenWaterNodeToWorld(candidate, gridSize);
                         if (!bounds.Contains(candidate.X, candidate.Y) ||
-                            OpenWaterNodeBlocked(candidate, obstacles))
+                            OpenWaterNodeBlocked(candidate, obstacles, gridSize))
                         {
                             continue;
                         }
@@ -570,11 +1053,16 @@ namespace RetrieveItemsOrderMod
 
         private List<Vector2> ReconstructOpenWaterPath(Dictionary<Point, Point> cameFrom, Point current)
         {
-            List<Vector2> path = new List<Vector2> { OpenWaterNodeToWorld(current) };
+            return ReconstructOpenWaterPath(cameFrom, current, OpenWaterGridSize);
+        }
+
+        private List<Vector2> ReconstructOpenWaterPath(Dictionary<Point, Point> cameFrom, Point current, float gridSize)
+        {
+            List<Vector2> path = new List<Vector2> { OpenWaterNodeToWorld(current, gridSize) };
             while (cameFrom.TryGetValue(current, out Point previous))
             {
                 current = previous;
-                path.Add(OpenWaterNodeToWorld(current));
+                path.Add(OpenWaterNodeToWorld(current, gridSize));
             }
 
             path.Reverse();
@@ -607,7 +1095,12 @@ namespace RetrieveItemsOrderMod
 
         private bool OpenWaterNodeBlocked(Point node, List<Rectangle> obstacles)
         {
-            Vector2 world = OpenWaterNodeToWorld(node);
+            return OpenWaterNodeBlocked(node, obstacles, OpenWaterGridSize);
+        }
+
+        private bool OpenWaterNodeBlocked(Point node, List<Rectangle> obstacles, float gridSize)
+        {
+            Vector2 world = OpenWaterNodeToWorld(node, gridSize);
             if (OpenWaterRectangleObstacleBlocked(world, obstacles, GetOpenWaterPassableGapRects()))
             {
                 return true;
@@ -623,13 +1116,44 @@ namespace RetrieveItemsOrderMod
                 return true;
             }
 
-            float distance = Vector2.Distance(start, end);
+            Vector2 direction = end - start;
+            float distance = direction.Length();
             int steps = Math.Max((int)(distance / (OpenWaterGridSize * 0.5f)), 1);
             List<Rectangle> passableGapRects = GetOpenWaterPassableGapRects();
+
+            Vector2 perpendicular = Vector2.Zero;
+            if (distance > 1.0f)
+            {
+                float clearanceRatio = openWaterScaledClearance / OpenWaterNodeClearance;
+                float halfWidth = OpenWaterCharacterHalfWidth * clearanceRatio;
+                perpendicular = new Vector2(-direction.Y, direction.X) * (halfWidth / distance);
+            }
+
             for (int i = 0; i <= steps; i++)
             {
-                Vector2 point = Vector2.Lerp(start, end, i / (float)steps);
+                float t = i / (float)steps;
+                Vector2 point = Vector2.Lerp(start, end, t);
                 if (OpenWaterRectangleObstacleBlocked(point, obstacles, passableGapRects))
+                {
+                    return true;
+                }
+
+                if (perpendicular.LengthSquared() > 0.01f)
+                {
+                    Vector2 leftPoint = point + perpendicular;
+                    Vector2 rightPoint = point - perpendicular;
+                    if (OpenWaterRectangleObstacleBlocked(leftPoint, obstacles, passableGapRects) ||
+                        OpenWaterRectangleObstacleBlocked(rightPoint, obstacles, passableGapRects))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            if (perpendicular.LengthSquared() > 0.01f)
+            {
+                if (OpenWaterPhysicsSegmentBlocked(start + perpendicular, end + perpendicular) ||
+                    OpenWaterPhysicsSegmentBlocked(start - perpendicular, end - perpendicular))
                 {
                     return true;
                 }
@@ -652,16 +1176,30 @@ namespace RetrieveItemsOrderMod
 
         private bool OpenWaterPhysicsPointBlocked(Vector2 world)
         {
-            Vector2 horizontalStart = world + new Vector2(-OpenWaterNodeClearance, 0.0f);
-            Vector2 horizontalEnd = world + new Vector2(OpenWaterNodeClearance, 0.0f);
+            float clearance = openWaterScaledClearance;
+            float diagonalReach = clearance * 0.7071f;
+            Vector2 horizontalStart = world + new Vector2(-clearance, 0.0f);
+            Vector2 horizontalEnd = world + new Vector2(clearance, 0.0f);
             if (OpenWaterPhysicsSegmentBlocked(horizontalStart, horizontalEnd))
             {
                 return true;
             }
 
-            Vector2 verticalStart = world + new Vector2(0.0f, -OpenWaterNodeClearance);
-            Vector2 verticalEnd = world + new Vector2(0.0f, OpenWaterNodeClearance);
-            return OpenWaterPhysicsSegmentBlocked(verticalStart, verticalEnd);
+            Vector2 verticalStart = world + new Vector2(0.0f, -clearance);
+            Vector2 verticalEnd = world + new Vector2(0.0f, clearance);
+            if (OpenWaterPhysicsSegmentBlocked(verticalStart, verticalEnd))
+            {
+                return true;
+            }
+
+            Vector2 diagNE = world + new Vector2(diagonalReach, diagonalReach);
+            if (OpenWaterPhysicsSegmentBlocked(world - new Vector2(diagonalReach, diagonalReach), diagNE))
+            {
+                return true;
+            }
+
+            Vector2 diagSE = world + new Vector2(diagonalReach, -diagonalReach);
+            return OpenWaterPhysicsSegmentBlocked(world - new Vector2(diagonalReach, -diagonalReach), diagSE);
         }
 
         private bool OpenWaterPhysicsSegmentBlocked(Vector2 start, Vector2 end)
@@ -707,7 +1245,7 @@ namespace RetrieveItemsOrderMod
                 return true;
             }
 
-            if (Vector2.DistanceSquared(hitWorld, startWorld) < OpenWaterNodeClearance * OpenWaterNodeClearance)
+            if (Vector2.DistanceSquared(hitWorld, startWorld) < OpenWaterRaycastStartClearance * OpenWaterRaycastStartClearance)
             {
                 return true;
             }
@@ -954,17 +1492,32 @@ namespace RetrieveItemsOrderMod
 
         private Point WorldToOpenWaterNode(Vector2 worldPosition)
         {
-            return new Point(
-                (int)Math.Round(worldPosition.X / OpenWaterGridSize),
-                (int)Math.Round(worldPosition.Y / OpenWaterGridSize));
+            return WorldToOpenWaterNode(worldPosition, OpenWaterGridSize);
         }
 
         private Vector2 OpenWaterNodeToWorld(Point node)
         {
-            return new Vector2(node.X * OpenWaterGridSize, node.Y * OpenWaterGridSize);
+            return OpenWaterNodeToWorld(node, OpenWaterGridSize);
+        }
+
+        private static Point WorldToOpenWaterNode(Vector2 worldPosition, float gridSize)
+        {
+            return new Point(
+                (int)Math.Round(worldPosition.X / gridSize),
+                (int)Math.Round(worldPosition.Y / gridSize));
+        }
+
+        private static Vector2 OpenWaterNodeToWorld(Point node, float gridSize)
+        {
+            return new Vector2(node.X * gridSize, node.Y * gridSize);
         }
 
         private Rectangle GetInflatedHullWorldRect(Hull hull)
+        {
+            return GetInflatedHullWorldRect(hull, OpenWaterObstacleInflation);
+        }
+
+        private Rectangle GetInflatedHullWorldRect(Hull hull, float inflation)
         {
             Rectangle rect = GetWorldRect(hull);
             if (rect.Width <= 0 || rect.Height <= 0)
@@ -972,7 +1525,7 @@ namespace RetrieveItemsOrderMod
                 return Rectangle.Empty;
             }
 
-            int inflate = (int)OpenWaterObstacleInflation;
+            int inflate = (int)inflation;
             rect.Inflate(inflate, inflate);
             return rect;
         }
@@ -998,6 +1551,104 @@ namespace RetrieveItemsOrderMod
         {
             return currentTargetItem != null &&
                    !currentTargetItem.Removed;
+        }
+
+        private struct OpenWaterMinHeap
+        {
+            private readonly List<Point> nodes;
+            private readonly Dictionary<Point, float> priorities;
+
+            public int Count => nodes.Count;
+
+            public OpenWaterMinHeap(int capacity)
+            {
+                nodes = new List<Point>(capacity);
+                priorities = new Dictionary<Point, float>(capacity);
+            }
+
+            public void Enqueue(Point node, float priority)
+            {
+                priorities[node] = priority;
+                nodes.Add(node);
+                SiftUp(nodes.Count - 1);
+            }
+
+            public Point Dequeue()
+            {
+                Point result = nodes[0];
+                priorities.Remove(result);
+                int last = nodes.Count - 1;
+                nodes[0] = nodes[last];
+                nodes.RemoveAt(last);
+                if (nodes.Count > 0)
+                {
+                    SiftDown(0);
+                }
+
+                return result;
+            }
+
+            public bool Contains(Point node)
+            {
+                return priorities.ContainsKey(node);
+            }
+
+            public void UpdatePriority(Point node, float newPriority)
+            {
+                if (priorities.ContainsKey(node))
+                {
+                    priorities[node] = newPriority;
+                }
+            }
+
+            private void SiftUp(int index)
+            {
+                while (index > 0)
+                {
+                    int parent = (index - 1) / 2;
+                    if (priorities[nodes[index]] >= priorities[nodes[parent]])
+                    {
+                        break;
+                    }
+
+                    Swap(index, parent);
+                    index = parent;
+                }
+            }
+
+            private void SiftDown(int index)
+            {
+                int count = nodes.Count;
+                while (true)
+                {
+                    int left = 2 * index + 1;
+                    int right = 2 * index + 2;
+                    int smallest = index;
+
+                    if (left < count && priorities[nodes[left]] < priorities[nodes[smallest]])
+                    {
+                        smallest = left;
+                    }
+
+                    if (right < count && priorities[nodes[right]] < priorities[nodes[smallest]])
+                    {
+                        smallest = right;
+                    }
+
+                    if (smallest == index)
+                    {
+                        break;
+                    }
+
+                    Swap(index, smallest);
+                    index = smallest;
+                }
+            }
+
+            private void Swap(int a, int b)
+            {
+                (nodes[a], nodes[b]) = (nodes[b], nodes[a]);
+            }
         }
     }
 }
