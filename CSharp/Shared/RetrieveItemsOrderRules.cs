@@ -480,17 +480,7 @@ namespace RetrieveItemsOrderMod
 
         public static bool CanMarkContainer(Item container, Character orderedCharacter)
         {
-            if (!IsMarkableRetrievalTarget(container))
-            {
-                return false;
-            }
-
-            if (container.Submarine == null)
-            {
-                return IsPortableRetrievalTarget(container);
-            }
-
-            return !HasHostiles(container.Submarine, orderedCharacter);
+            return IsMarkableRetrievalTarget(container);
         }
 
         public static bool IsCharacterInsideTarget(Character character, Submarine targetLocation)

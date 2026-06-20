@@ -28,6 +28,7 @@
   <retrieveitems.abort.nostorage>I can't find anywhere appropriate to store the remaining loot.</retrieveitems.abort.nostorage>
   <retrieveitems.refused>I can only do that while I'm already inside a cleared abandoned outpost or beacon station.</retrieveitems.refused>
   <retrieveitems.hostiles>I won't start retrieval until the outpost is clear of hostiles.</retrieveitems.hostiles>
+  <retrieveitems.cannotmark>Cannot Mark Container.</retrieveitems.cannotmark>
   <retrieveitems.marked>Container marked for retrieval.</retrieveitems.marked>
   <retrieveitems.unmarked>Container unmarked for retrieval.</retrieveitems.unmarked>
   <retrievewreckitems.searching>Searching for marked wreck salvage...</retrievewreckitems.searching>

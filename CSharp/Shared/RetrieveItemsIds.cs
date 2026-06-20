@@ -21,6 +21,7 @@ namespace RetrieveItemsOrderMod
         public static readonly Identifier CancelDialog = "retrieveitems.cancelled".ToIdentifier();
         public static readonly Identifier RefuseDialog = "retrieveitems.refused".ToIdentifier();
         public static readonly Identifier HostilesDialog = "retrieveitems.hostiles".ToIdentifier();
+        public static readonly Identifier CannotMarkDialog = "retrieveitems.cannotmark".ToIdentifier();
         public static readonly Identifier MarkedDialog = "retrieveitems.marked".ToIdentifier();
         public static readonly Identifier UnmarkedDialog = "retrieveitems.unmarked".ToIdentifier();
     }

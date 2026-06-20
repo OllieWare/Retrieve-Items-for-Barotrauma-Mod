@@ -33,8 +33,8 @@ namespace RetrieveItemsOrderMod
                     if (speak && character != null && character.IsOnPlayerTeam)
                     {
                         character.Speak(
-                            RetrieveItemsOrderRules.GetText(RetrieveItemsIds.HostilesDialog, "I won't do that until the outpost is clear of hostiles."),
-                            identifier: RetrieveItemsIds.HostilesDialog,
+                            RetrieveItemsOrderRules.GetText(RetrieveItemsIds.CannotMarkDialog, "Cannot Mark Container"),
+                            identifier: RetrieveItemsIds.CannotMarkDialog,
                             minDurationBetweenSimilar: 1.0f);
                     }
 
