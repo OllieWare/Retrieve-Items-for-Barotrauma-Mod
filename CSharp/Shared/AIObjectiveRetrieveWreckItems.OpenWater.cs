@@ -19,7 +19,7 @@ namespace RetrieveItemsOrderMod
         private const float OpenWaterDirectGoalThreshold = 300.0f;
         private const float OpenWaterObstacleInflation = 15.0f;
         private const float OpenWaterNodeClearance = 15.0f;
-        private const float OpenWaterRaycastStartClearance = 20.0f;
+        private const float OpenWaterRaycastStartClearance = 5.0f;
         private const float OpenWaterCharacterHalfWidth = 10.0f;
         private const int OpenWaterNearestNodeSearchRadius = 20;
         private float openWaterScaledClearance = OpenWaterNodeClearance;
@@ -182,7 +182,7 @@ namespace RetrieveItemsOrderMod
                 {
                     List<Rectangle> obstacles = openWaterScaledObstacles ?? GetOpenWaterObstacles();
                     Vector2 followingPoint = openWaterPath[openWaterPathIndex + 1];
-                    if (OpenWaterSegmentBlockedByRectangles(character.WorldPosition, followingPoint, obstacles))
+                    if (OpenWaterSegmentBlocked(character.WorldPosition, followingPoint, obstacles))
                     {
                         break;
                     }
@@ -203,6 +203,11 @@ namespace RetrieveItemsOrderMod
             while (openWaterPathIndex < openWaterPath.Count &&
                    Vector2.DistanceSquared(nextPoint, targetWorldPosition) > currentTargetDistanceSquared + (OpenWaterGridSize * OpenWaterGridSize))
             {
+                if (OpenWaterSegmentBlocked(character.WorldPosition, nextPoint, skipObstacles))
+                {
+                    break;
+                }
+
                 int candidateIndex = openWaterPathIndex + 1;
                 if (candidateIndex >= openWaterPath.Count)
                 {
@@ -210,7 +215,7 @@ namespace RetrieveItemsOrderMod
                 }
 
                 Vector2 candidatePoint = openWaterPath[candidateIndex];
-                if (OpenWaterSegmentBlockedByRectangles(character.WorldPosition, candidatePoint, skipObstacles))
+                if (OpenWaterSegmentBlocked(character.WorldPosition, candidatePoint, skipObstacles))
                 {
                     break;
                 }
@@ -229,16 +234,15 @@ namespace RetrieveItemsOrderMod
             float waypointDistance = Vector2.Distance(character.WorldPosition, nextPoint);
             UpdateOpenWaterProgress(deltaTime, waypointDistance, targetDistance);
 
-            if (openWaterPathIndex == 0 && openWaterPath.Count > 1)
+            if (nextPoint != targetWorldPosition && openWaterPath.Count > 1)
             {
                 List<Rectangle> firstSegObstacles = openWaterScaledObstacles ?? GetOpenWaterObstacles();
-                Vector2 secondWaypoint = openWaterPath[1];
-                if (OpenWaterSegmentBlockedByRectangles(character.WorldPosition, secondWaypoint, firstSegObstacles))
+                if (OpenWaterSegmentBlocked(character.WorldPosition, nextPoint, firstSegObstacles))
                 {
-                    Vector2 toSecond = Vector2.Normalize(secondWaypoint - character.WorldPosition);
-                    Vector2 perpA = new Vector2(-toSecond.Y, toSecond.X);
-                    Vector2 perpB = new Vector2(toSecond.Y, -toSecond.X);
-                    Vector2 reversed = -toSecond;
+                    Vector2 toNext = Vector2.Normalize(nextPoint - character.WorldPosition);
+                    Vector2 perpA = new Vector2(-toNext.Y, toNext.X);
+                    Vector2 perpB = new Vector2(toNext.Y, -toNext.X);
+                    Vector2 reversed = -toNext;
                     Vector2 up = new Vector2(0, 1);
                     Vector2 down = new Vector2(0, -1);
                     Vector2 right = new Vector2(1, 0);
@@ -247,7 +251,7 @@ namespace RetrieveItemsOrderMod
                     Vector2 diagNW = Vector2.Normalize(new Vector2(-1, 1));
                     Vector2 diagSE = Vector2.Normalize(new Vector2(1, -1));
                     Vector2 diagSW = Vector2.Normalize(new Vector2(-1, -1));
-                    Vector2[] candidates = { toSecond, perpA, perpB, -perpA, -perpB, reversed, up, down, right, left, diagNE, diagNW, diagSE, diagSW };
+                    Vector2[] candidates = { toNext, perpA, perpB, -perpA, -perpB, reversed, up, down, right, left, diagNE, diagNW, diagSE, diagSW };
                     Vector2 slideDir = Vector2.Zero;
                     float bestScore = float.MinValue;
                     Vector2 desperationDir = Vector2.Zero;
@@ -265,7 +269,7 @@ namespace RetrieveItemsOrderMod
                             int ey = (int)endPoint.Y;
                             bool endpointBlocked = firstSegObstacles.Any(r => r.Contains(ex, ey)) && !gapRects.Any(r => r.Contains(ex, ey));
 
-                            float score = Vector2.Dot(dir, toSecond);
+                            float score = Vector2.Dot(dir, toNext);
                             if (!endpointBlocked && score > bestScoreAtDist)
                             {
                                 bestScoreAtDist = score;
@@ -306,7 +310,7 @@ namespace RetrieveItemsOrderMod
                         character.OverrideMovement = pushDir;
                         ClearOpenWaterMovementInputs();
                         ResetStuckTracking();
-                        LuaCsLogger.Log($"[RetrieveItemsOrder] All directions blocked for {character.Name}; pushing toward waypoint for 3s (push=({pushDir.X:0.00},{pushDir.Y:0.00}))");
+                        LuaCsLogger.Log($"[RetrieveItemsOrder] All directions blocked for {character.Name}; pushing away for 3s (push=({pushDir.X:0.00},{pushDir.Y:0.00}))");
                         return false;
                     }
 
@@ -664,6 +668,7 @@ namespace RetrieveItemsOrderMod
             costSoFar[startNode] = 0.0f;
             open.Enqueue(startNode, OpenWaterHeuristic(startNode, goalNode));
 
+            const int maxExplored = 2000;
             while (open.Count > 0)
             {
                 Point current = open.Dequeue();
@@ -675,6 +680,11 @@ namespace RetrieveItemsOrderMod
                 }
 
                 closed.Add(current);
+                if (closed.Count >= maxExplored)
+                {
+                    LuaCsLogger.Log($"[RetrieveItemsOrder] A* node limit reached (grid={gridSize:0}) for {character.Name}: explored={closed.Count}");
+                    break;
+                }
                 foreach (Point next in GetOpenWaterNeighbors(current))
                 {
                     Vector2 currentWorld = OpenWaterNodeToWorld(current, gridSize);
@@ -884,6 +894,7 @@ namespace RetrieveItemsOrderMod
             costSoFar[startNode] = 0.0f;
             open.Enqueue(startNode, OpenWaterHeuristic(startNode, goalNode));
 
+            const int maxExplored = 2000;
             while (open.Count > 0)
             {
                 Point current = open.Dequeue();
@@ -893,6 +904,11 @@ namespace RetrieveItemsOrderMod
                 }
 
                 closed.Add(current);
+                if (closed.Count >= maxExplored)
+                {
+                    LuaCsLogger.Log($"[RetrieveItemsOrder] A* fine-grid node limit reached for {character.Name}: explored={closed.Count}");
+                    break;
+                }
                 foreach (Point next in GetOpenWaterNeighbors(current))
                 {
                     Vector2 currentWorld = OpenWaterNodeToWorld(current);
@@ -1051,17 +1067,118 @@ namespace RetrieveItemsOrderMod
             int anchor = 0;
             while (anchor < path.Count - 1)
             {
-                int next = path.Count - 1;
-                while (next > anchor + 1 && OpenWaterSegmentBlocked(path[anchor], path[next], obstacles))
+                int next = anchor + 1;
+                while (next < path.Count - 1 && !OpenWaterSegmentBlocked(path[anchor], path[next + 1], obstacles))
                 {
-                    next--;
+                    next++;
                 }
 
                 smoothed.Add(path[next]);
                 anchor = next;
             }
 
-            return smoothed;
+            return RefineOpenWaterPath(smoothed, obstacles);
+        }
+
+        private List<Vector2> RefineOpenWaterPath(List<Vector2> path, List<Rectangle> obstacles)
+        {
+            if (path.Count <= 2)
+            {
+                return path;
+            }
+
+            List<Rectangle> gapRects = GetOpenWaterPassableGapRects();
+            float requiredClearance = Math.Max(openWaterScaledClearance, OpenWaterCharacterHalfWidth);
+            List<Vector2> refined = new List<Vector2>(path);
+            bool changed = true;
+            int iterations = 0;
+            while (changed && iterations < 3)
+            {
+                changed = false;
+                iterations++;
+                for (int i = 1; i < refined.Count - 1; i++)
+                {
+                    Vector2 waypoint = refined[i];
+                    Vector2 prev = refined[i - 1];
+                    Vector2 next = refined[i + 1];
+                    Vector2 segDirA = waypoint - prev;
+                    Vector2 segDirB = next - waypoint;
+                    Vector2 segNormal = Vector2.Zero;
+                    if (segDirA.LengthSquared() > 0.01f && segDirB.LengthSquared() > 0.01f)
+                    {
+                        Vector2 avgDir = Vector2.Normalize(segDirA) + Vector2.Normalize(segDirB);
+                        if (avgDir.LengthSquared() > 0.01f)
+                        {
+                            segNormal = new Vector2(-avgDir.Y, avgDir.X);
+                        }
+                    }
+
+                    if (segNormal.LengthSquared() < 0.01f)
+                    {
+                        if (segDirA.LengthSquared() > 0.01f)
+                        {
+                            segNormal = new Vector2(-segDirA.Y, segDirA.X);
+                        }
+                        else if (segDirB.LengthSquared() > 0.01f)
+                        {
+                            segNormal = new Vector2(-segDirB.Y, segDirB.X);
+                        }
+                    }
+
+                    Vector2 bestPush = Vector2.Zero;
+                    float bestPushDist = float.MaxValue;
+                    int wx = (int)waypoint.X;
+                    int wy = (int)waypoint.Y;
+                    foreach (Rectangle rect in obstacles)
+                    {
+                        if (gapRects.Any(g => g.Contains(wx, wy)))
+                        {
+                            continue;
+                        }
+
+                        float closestX = Math.Max(rect.X, Math.Min(waypoint.X, rect.X + rect.Width));
+                        float closestY = Math.Max(rect.Y, Math.Min(waypoint.Y, rect.Y + rect.Height));
+                        Vector2 closestPoint = new Vector2(closestX, closestY);
+                        float dist = Vector2.Distance(waypoint, closestPoint);
+                        if (dist >= requiredClearance)
+                        {
+                            continue;
+                        }
+
+                        Vector2 awayFromRect = waypoint - closestPoint;
+                        if (awayFromRect.LengthSquared() < 0.01f)
+                        {
+                            awayFromRect = segNormal;
+                        }
+
+                        if (awayFromRect.LengthSquared() < 0.01f)
+                        {
+                            continue;
+                        }
+
+                        awayFromRect = Vector2.Normalize(awayFromRect);
+                        float needed = requiredClearance - dist;
+                        if (needed < bestPushDist)
+                        {
+                            bestPushDist = needed;
+                            bestPush = awayFromRect;
+                        }
+                    }
+
+                    if (bestPush.LengthSquared() > 0.01f && bestPushDist > 0.1f)
+                    {
+                        Vector2 newWaypoint = waypoint + bestPush * bestPushDist;
+                        if (!OpenWaterSegmentBlocked(prev, newWaypoint, obstacles) &&
+                            !OpenWaterSegmentBlocked(newWaypoint, next, obstacles))
+                        {
+                            refined[i] = newWaypoint;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            return refined;
         }
 
         private bool OpenWaterNodeBlocked(Point node, List<Rectangle> obstacles)
@@ -1072,11 +1189,6 @@ namespace RetrieveItemsOrderMod
         private bool OpenWaterNodeBlocked(Point node, List<Rectangle> obstacles, float gridSize)
         {
             Vector2 world = OpenWaterNodeToWorld(node, gridSize);
-            if (OpenWaterRectangleObstacleBlocked(world, obstacles, GetOpenWaterPassableGapRects()))
-            {
-                return true;
-            }
-
             return OpenWaterPhysicsPointBlocked(world);
         }
 
@@ -1097,8 +1209,7 @@ namespace RetrieveItemsOrderMod
             float distance = direction.Length();
             if (distance > 1.0f)
             {
-                float clearanceRatio = openWaterScaledClearance / OpenWaterNodeClearance;
-                float halfWidth = OpenWaterCharacterHalfWidth * clearanceRatio;
+                float halfWidth = OpenWaterCharacterHalfWidth;
                 Vector2 perpendicular = new Vector2(-direction.Y, direction.X) * (halfWidth / distance);
                 if (perpendicular.LengthSquared() > 0.01f)
                 {
@@ -1123,8 +1234,7 @@ namespace RetrieveItemsOrderMod
             Vector2 perpendicular = Vector2.Zero;
             if (distance > 1.0f)
             {
-                float clearanceRatio = openWaterScaledClearance / OpenWaterNodeClearance;
-                float halfWidth = OpenWaterCharacterHalfWidth * clearanceRatio;
+                float halfWidth = OpenWaterCharacterHalfWidth;
                 perpendicular = new Vector2(-direction.Y, direction.X) * (halfWidth / distance);
             }
 
@@ -1147,6 +1257,8 @@ namespace RetrieveItemsOrderMod
                         return true;
                     }
                 }
+
+
             }
 
             return false;
@@ -1166,30 +1278,29 @@ namespace RetrieveItemsOrderMod
 
         private bool OpenWaterPhysicsPointBlocked(Vector2 world)
         {
-            float clearance = openWaterScaledClearance;
-            float diagonalReach = clearance * 0.7071f;
-            Vector2 horizontalStart = world + new Vector2(-clearance, 0.0f);
-            Vector2 horizontalEnd = world + new Vector2(clearance, 0.0f);
-            if (OpenWaterPhysicsSegmentBlocked(horizontalStart, horizontalEnd))
+            float probeDist = 2.0f;
+            Vector2 hStart = world + new Vector2(-probeDist, 0.0f);
+            Vector2 hEnd = world + new Vector2(probeDist, 0.0f);
+            if (OpenWaterPhysicsSegmentBlocked(hStart, hEnd))
             {
                 return true;
             }
 
-            Vector2 verticalStart = world + new Vector2(0.0f, -clearance);
-            Vector2 verticalEnd = world + new Vector2(0.0f, clearance);
-            if (OpenWaterPhysicsSegmentBlocked(verticalStart, verticalEnd))
+            Vector2 vStart = world + new Vector2(0.0f, -probeDist);
+            Vector2 vEnd = world + new Vector2(0.0f, probeDist);
+            if (OpenWaterPhysicsSegmentBlocked(vStart, vEnd))
             {
                 return true;
             }
 
-            Vector2 diagNE = world + new Vector2(diagonalReach, diagonalReach);
-            if (OpenWaterPhysicsSegmentBlocked(world - new Vector2(diagonalReach, diagonalReach), diagNE))
+            Vector2 diagNE = world + new Vector2(probeDist, probeDist);
+            if (OpenWaterPhysicsSegmentBlocked(world - new Vector2(probeDist, probeDist), diagNE))
             {
                 return true;
             }
 
-            Vector2 diagSE = world + new Vector2(diagonalReach, -diagonalReach);
-            return OpenWaterPhysicsSegmentBlocked(world - new Vector2(diagonalReach, -diagonalReach), diagSE);
+            Vector2 diagSE = world + new Vector2(probeDist, -probeDist);
+            return OpenWaterPhysicsSegmentBlocked(world - new Vector2(probeDist, -probeDist), diagSE);
         }
 
         private bool OpenWaterPhysicsSegmentBlocked(Vector2 start, Vector2 end)
