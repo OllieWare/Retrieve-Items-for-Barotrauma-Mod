@@ -29,7 +29,9 @@ namespace RetrieveItemsOrderMod
             ToAirlock,
             AirlockCycle,
             VanillaExit,
-            OpenWater
+            SubExitWaypoint,
+            OpenWater,
+            SubEntryWaypoint
         }
 
         private const float StatusCooldown = 5.0f;
@@ -40,6 +42,8 @@ namespace RetrieveItemsOrderMod
         private const float SearchRadius = 20000.0f;
         private const float AirlockFloodThreshold = 0.90f;
         private const float AirlockCycleTimeout = 10.0f;
+        private const float SubExitStagingDistance = 500.0f;
+        private const float SubEntryTriggerDistance = 500.0f;
 
         private readonly Order sourceOrder;
         private readonly HashSet<Item> initialInventoryItems = new HashSet<Item>();
@@ -77,6 +81,7 @@ namespace RetrieveItemsOrderMod
         private float openWaterLastDistance = float.MaxValue;
         private int openWaterLastObstacleCount = -1;
         private List<Rectangle> openWaterCachedObstacles;
+        private List<Rectangle> openWaterCachedGapRects;
         private int openWaterFailedRepathCount;
         private int openWaterGiveUpCount;
         private Vector2 lastWorldPosition;
@@ -85,6 +90,8 @@ namespace RetrieveItemsOrderMod
         private List<Vector2> openWaterPath = new List<Vector2>();
         private int openWaterPathIndex;
         private Vector2 openWaterPathGoal;
+        private Vector2 subExitStagingPoint;
+        private Vector2 subEntryTargetPoint;
 
         public override Identifier Identifier { get; set; } = RetrieveItemsIds.WreckOrderIdentifier;
         public override string DebugTag => $"{Identifier} ({state})";
@@ -351,6 +358,18 @@ namespace RetrieveItemsOrderMod
                 return;
             }
 
+            if (travelPhase == WreckTravelPhase.SubExitWaypoint)
+            {
+                UpdateTravelingSubExitWaypoint(deltaTime);
+                return;
+            }
+
+            if (travelPhase == WreckTravelPhase.SubEntryWaypoint)
+            {
+                UpdateTravelingSubEntryWaypoint(deltaTime);
+                return;
+            }
+
             if (!usingOpenWaterFallback && character.CurrentHull != null)
             {
                 ReleaseOpenWaterMovementControl();
@@ -434,6 +453,13 @@ namespace RetrieveItemsOrderMod
                 if (UpdateOpenWaterNavigation(deltaTime, currentTargetItem, OpenWaterCloseEnough))
                 {
                     StopOpenWaterFallback();
+                    if (IsTargetInsideWreckSub() && !IsCloseToCurrentTarget(SubEntryTriggerDistance))
+                    {
+                        ComputeSubEntryTargetPoint();
+                        travelPhase = WreckTravelPhase.SubEntryWaypoint;
+                        LuaCsLogger.Log($"[RetrieveItemsOrder] Open-water path reached near wreck sub for {character.Name}; transitioning to sub entry waypoint");
+                        return;
+                    }
                     state = WreckRetrieveState.Retrieving;
                     statusTimer = 0.0f;
                     ResetStuckTracking();
@@ -519,8 +545,8 @@ namespace RetrieveItemsOrderMod
             if (ShouldUseOpenWaterFallback())
             {
                 ClearSubObjective();
-                travelPhase = WreckTravelPhase.OpenWater;
-                StartOpenWaterFallback();
+                travelPhase = WreckTravelPhase.SubExitWaypoint;
+                ComputeSubExitStagingPoint();
                 return;
             }
 
@@ -583,18 +609,18 @@ namespace RetrieveItemsOrderMod
             if (isOutsideAirlock)
             {
                 ClearSubObjective();
-                travelPhase = WreckTravelPhase.OpenWater;
-                StartOpenWaterFallback();
-                LuaCsLogger.Log($"[RetrieveItemsOrder] Wreck retrieval exited airlock for {character.Name}; transitioning to open water navigation");
+                travelPhase = WreckTravelPhase.SubExitWaypoint;
+                ComputeSubExitStagingPoint();
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Wreck retrieval exited airlock for {character.Name}; transitioning to sub exit waypoint (staging=({subExitStagingPoint.X:0},{subExitStagingPoint.Y:0}))");
                 return;
             }
 
             if (IsStuckOnCurrentSubObjective() || stuckTimer >= StuckTimeout)
             {
-                LuaCsLogger.Log($"[RetrieveItemsOrder] Stuck in VanillaExit for {character.Name} (stuckTimer={stuckTimer:0.0}s); forcing open water transition");
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Stuck in VanillaExit for {character.Name} (stuckTimer={stuckTimer:0.0}s); forcing sub exit waypoint transition");
                 ClearSubObjective();
-                travelPhase = WreckTravelPhase.OpenWater;
-                StartOpenWaterFallback();
+                travelPhase = WreckTravelPhase.SubExitWaypoint;
+                ComputeSubExitStagingPoint();
                 return;
             }
 
@@ -637,6 +663,181 @@ namespace RetrieveItemsOrderMod
             }
         }
 
+        private void ComputeSubExitStagingPoint()
+        {
+            if (homeSubmarine == null)
+            {
+                subExitStagingPoint = character.WorldPosition + new Vector2(0, -SubExitStagingDistance);
+                return;
+            }
+
+            Vector2 direction = currentTargetItem != null
+                ? currentTargetItem.WorldPosition - character.WorldPosition
+                : character.WorldPosition - GetWorldRect(homeSubmarine).Center.ToVector2();
+            if (direction.LengthSquared() < 1.0f)
+            {
+                direction = new Vector2(1, -1);
+            }
+
+            direction.Normalize();
+            subExitStagingPoint = character.WorldPosition + direction * SubExitStagingDistance;
+        }
+
+        private void ComputeSubEntryTargetPoint()
+        {
+            if (currentTargetItem == null || homeSubmarine == null)
+            {
+                subEntryTargetPoint = character.WorldPosition;
+                return;
+            }
+
+            Submarine targetSub = currentTargetItem.Submarine;
+            if (targetSub == null || targetSub == homeSubmarine)
+            {
+                subEntryTargetPoint = currentTargetItem.WorldPosition;
+                return;
+            }
+
+            Rectangle targetSubBounds = GetWorldRect(targetSub);
+            Vector2 targetSubCenter = new Vector2(targetSubBounds.Center.X, targetSubBounds.Center.Y);
+            Vector2 fromTargetToChar = character.WorldPosition - targetSubCenter;
+            if (fromTargetToChar.LengthSquared() < 1.0f)
+            {
+                fromTargetToChar = new Vector2(0, -1);
+            }
+
+            fromTargetToChar.Normalize();
+            subEntryTargetPoint = targetSubCenter + fromTargetToChar * (SubEntryTriggerDistance + Math.Max(targetSubBounds.Width, targetSubBounds.Height) * 0.5f);
+        }
+
+        private bool IsTargetInsideWreckSub()
+        {
+            if (currentTargetItem == null || homeSubmarine == null)
+            {
+                return false;
+            }
+
+            Submarine targetSub = currentTargetItem.Submarine;
+            if (targetSub == null || targetSub == homeSubmarine)
+            {
+                return false;
+            }
+
+            Hull targetHull = currentTargetItem.CurrentHull;
+            return targetHull != null && targetHull.Submarine == targetSub;
+        }
+
+        private void UpdateTravelingSubExitWaypoint(float deltaTime)
+        {
+            float distToStaging = Vector2.Distance(character.WorldPosition, subExitStagingPoint);
+            if (distToStaging < OpenWaterWaypointCloseEnough)
+            {
+                ClearSubObjective();
+                travelPhase = WreckTravelPhase.OpenWater;
+                StartOpenWaterFallback();
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Wreck retrieval reached staging point for {character.Name} (dist={distToStaging:0}); transitioning to open water A*");
+                return;
+            }
+
+            if (stuckTimer >= StuckTimeout)
+            {
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Stuck in SubExitWaypoint for {character.Name} (stuckTimer={stuckTimer:0.0}s); skipping to open water");
+                ClearSubObjective();
+                travelPhase = WreckTravelPhase.OpenWater;
+                StartOpenWaterFallback();
+                return;
+            }
+
+            bool isInHull = character.CurrentHull != null && IsCharacterInsideHullBounds(character.CurrentHull);
+            if (isInHull)
+            {
+                WayPoint nearestWp = null;
+                float nearestDist = float.MaxValue;
+                foreach (WayPoint wp in WayPoint.WayPointList)
+                {
+                    if (wp.Submarine != null && wp.Submarine != character.Submarine) continue;
+                    float d = Vector2.Distance(wp.WorldPosition, subExitStagingPoint);
+                    if (d < nearestDist)
+                    {
+                        nearestDist = d;
+                        nearestWp = wp;
+                    }
+                }
+
+                if (nearestWp != null)
+                {
+                    if (currentSubObjective?.Abandon == true || IsStuckOnCurrentSubObjective())
+                    {
+                        ClearSubObjective();
+                        ResetStuckTracking();
+                    }
+
+                    if (!IsSubObjectiveActive())
+                    {
+                        currentSubObjective = new AIObjectiveGoTo(nearestWp, character, objectiveManager, repeat: false, getDivingGearIfNeeded: true, priorityModifier: 1.0f, closeEnough: OpenWaterWaypointCloseEnough)
+                        {
+                            AllowGoingOutside = true,
+                            SpeakIfFails = false
+                        };
+                        AddSubObjective(currentSubObjective);
+                        LuaCsLogger.Log($"[RetrieveItemsOrder] Wreck retrieval still in hull during SubExitWaypoint for {character.Name}; navigating to nearest waypoint toward staging point");
+                    }
+                }
+                return;
+            }
+
+            if (!usingOpenWaterFallback)
+            {
+                StartOpenWaterFallback();
+            }
+
+            if (UpdateOpenWaterNavigation(deltaTime, subExitStagingPoint, OpenWaterWaypointCloseEnough, "staging point"))
+            {
+                travelPhase = WreckTravelPhase.OpenWater;
+                StartOpenWaterFallback();
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Wreck retrieval A* reached staging point for {character.Name}; transitioning to open water");
+            }
+        }
+
+        private void UpdateTravelingSubEntryWaypoint(float deltaTime)
+        {
+            if (IsCloseToCurrentTarget(OpenWaterCloseEnough))
+            {
+                ClearSubObjective();
+                StopOpenWaterFallback();
+                state = WreckRetrieveState.Retrieving;
+                statusTimer = 0.0f;
+                ResetStuckTracking();
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Wreck retrieval arrived at target item for {character.Name}; transitioning to retrieving");
+                return;
+            }
+
+            if (!usingOpenWaterFallback && character.CurrentHull != null)
+            {
+                ReleaseOpenWaterMovementControl();
+            }
+
+            if (IsStuckOnCurrentSubObjective() || stuckTimer >= StuckTimeout)
+            {
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Stuck in SubEntryWaypoint for {character.Name} (stuckTimer={stuckTimer:0.0}s); retrying open water");
+                ClearSubObjective();
+                travelPhase = WreckTravelPhase.OpenWater;
+                StartOpenWaterFallback();
+                return;
+            }
+
+            if (!IsSubObjectiveActive())
+            {
+                currentSubObjective = new AIObjectiveGoTo(currentTargetItem, character, objectiveManager, repeat: false, getDivingGearIfNeeded: true, priorityModifier: 1.0f, closeEnough: OpenWaterCloseEnough)
+                {
+                    AllowGoingOutside = true,
+                    SpeakIfFails = false
+                };
+                AddSubObjective(currentSubObjective);
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Wreck retrieval navigating to target item in wreck sub for {character.Name}: {currentTargetItem.Name}");
+            }
+        }
+
         private void UpdateAirlockCycle(float deltaTime)
         {
             Speak("Cycling airlock.", "retrievewreckitems.airlockcycle".ToIdentifier(), StatusCooldown);
@@ -659,9 +860,9 @@ namespace RetrieveItemsOrderMod
             if (character.CurrentHull != exitAirlockHull && !IsCharacterInsideHullBounds(exitAirlockHull))
             {
                 ClearSubObjective();
-                travelPhase = WreckTravelPhase.OpenWater;
-                StartOpenWaterFallback();
-                LuaCsLogger.Log($"[RetrieveItemsOrder] Wreck retrieval exited airlock during cycle for {character.Name}; transitioning to open water");
+                travelPhase = WreckTravelPhase.SubExitWaypoint;
+                ComputeSubExitStagingPoint();
+                LuaCsLogger.Log($"[RetrieveItemsOrder] Wreck retrieval exited airlock during cycle for {character.Name}; transitioning to sub exit waypoint");
                 return;
             }
 
@@ -1635,7 +1836,7 @@ namespace RetrieveItemsOrderMod
             }
 
             if (currentSubObjective != null || usingOpenWaterFallback ||
-                (state == WreckRetrieveState.Traveling && travelPhase == WreckTravelPhase.VanillaExit))
+                (state == WreckRetrieveState.Traveling && (travelPhase == WreckTravelPhase.VanillaExit || travelPhase == WreckTravelPhase.SubExitWaypoint)))
             {
                 stuckTimer += deltaTime;
             }
